@@ -2,6 +2,8 @@
 
 A Nintendo Entertainment System (NES) emulator written in Rust, targeting generic desktop platforms (Windows/Mac/Linux) and WebAssembly (WASM).
 
+[日本語のREADMEはこちら](./README_ja.md)
+
 > [!NOTE]
 > **Vibe Coding**: This project was developed through "Vibe Coding"—a collaborative AI-native development process.
 > **Acknowledgements**: Special thanks to **Gemini code assist** for providing the core reasoning, architectural guidance, and implementation support that brought this emulator to life.
