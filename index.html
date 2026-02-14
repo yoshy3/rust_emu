@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Rust NES Emulator</title>
+    <style>
+      body {
+        background-color: #2b2b2b;
+        color: white;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        margin: 0;
+        font-family: sans-serif;
+      }
+      canvas {
+        image-rendering: pixelated;
+        border: 2px solid #555;
+        width: 512px; /* 2x scale */
+        height: 480px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Rust NES Emulator</h1>
+    <p>Drag and drop a .nes ROM file here (Not implemented yet - running test pattern)</p>
+    <canvas id="nes-canvas" width="256" height="240"></canvas>
+    <script type="module">
+      import init, { Nes } from './pkg/rust_emu.js';
+
+      async function run() {
+        await init();
+        
+        const canvas = document.getElementById('nes-canvas');
+        const ctx = canvas.getContext('2d');
+        const width = 256;
+        const height = 240;
+
+        // ImageData buffer for canvas
+        const imageData = ctx.createImageData(width, height);
+        // Create Uint8ClampedArray view on the buffer
+        const data = imageData.data;
+
+        const nes = Nes.new();
+        nes.reset();
+
+        function step() {
+            // Tick emulation
+            // In real emulator, we run many ticks per frame ~29780 CPU cycles
+            // For now, simpler verification
+            nes.tick();
+
+            // Draw to canvas
+            // We need to pass a buffer to draw
+            // This is tricky because we can't easily pass 'data' directly to wasm if it expects &mut [u8]
+            // We need to allocate buffer in WASM memory and copy it out, or pass a specific view.
+            
+            // Simpler approach for now: Allocate buffer in JS, pass to WASM
+            // BUT wasm-bindgen handles &mut [u8] by copying back and forth which is slow but works.
+            
+            const buffer = new Uint8Array(width * height * 4);
+            nes.draw(buffer);
+            
+            // Copy buffer back to canvas data
+            data.set(buffer);
+            ctx.putImageData(imageData, 0, 0);
+
+            requestAnimationFrame(step);
+        }
+
+        requestAnimationFrame(step);
+      }
+
+      run();
+    </script>
+  </body>
+</html>

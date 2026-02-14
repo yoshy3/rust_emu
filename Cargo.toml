@@ -1,0 +1,31 @@
+[package]
+name = "rust_emu"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+log = "0.4"
+pixels = "0.13"
+winit = "0.28"
+winit_input_helper = "0.14"
+anyhow = "1.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = "0.11"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+console_log = "1.0"
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "Window",
+    "Performance",
+    "console",
+] }
