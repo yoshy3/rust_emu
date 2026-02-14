@@ -84,8 +84,8 @@ MIT
 
 - 実行トリガー: Git Tag を push したとき（例: `v0.2.1`）
 - ワークフロー: `.github/workflows/deploy-pages.yml`
-- 公開用ディレクトリ（artifact ルート）: `public/`
-- `public/` に配置される内容: `index.html` と `pkg/`（`wasm-pack` の生成物）
+- 公開用ディレクトリ（artifact ルート）: `docs/`
+- `docs/` に配置される内容: `index.html` と `pkg/`（`wasm-pack` の生成物）
 
 ### 初回のみ必要な設定
 

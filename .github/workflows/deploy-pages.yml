@@ -34,17 +34,17 @@ jobs:
       - name: Build WASM package
         run: wasm-pack build --target web --release --no-typescript
 
-      - name: Prepare public artifact
+      - name: Prepare docs artifact
         run: |
-          rm -rf public
-          mkdir -p public/pkg
-          cp index.html public/index.html
-          cp -r pkg/. public/pkg/
+          rm -rf docs
+          mkdir -p docs/pkg
+          cp index.html docs/index.html
+          cp -r pkg/. docs/pkg/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: public
+          path: docs
 
   deploy:
     environment:
