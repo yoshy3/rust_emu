@@ -10,6 +10,7 @@ use winit_input_helper::WinitInputHelper;
 use rust_emu::joypad::JoypadButton;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{Arc, Mutex};
+use std::collections::VecDeque;
 
 const _SAMPLE_RATE: u32 = 44100;
 
@@ -69,18 +70,23 @@ fn main() -> Result<()> {
     let config = device.default_output_config().unwrap();
     let sample_rate = config.sample_rate().0;
 
-    let audio_buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
+    let audio_buffer = Arc::new(Mutex::new(VecDeque::<f32>::new()));
     let audio_buffer_out = Arc::clone(&audio_buffer);
+    let num_channels = config.channels();
 
     let stream = device.build_output_stream(
         &config.into(),
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
             let mut buffer = audio_buffer_out.lock().unwrap();
-            for frame in data.chunks_mut(1) {
-                if !buffer.is_empty() {
-                    frame[0] = buffer.remove(0);
+            for frame in data.chunks_mut(num_channels as usize) {
+                if let Some(sample) = buffer.pop_front() {
+                    for channel in frame {
+                        *channel = sample;
+                    }
                 } else {
-                    frame[0] = 0.0;
+                    for channel in frame {
+                        *channel = 0.0;
+                    }
                 }
             }
         },
@@ -97,6 +103,10 @@ fn main() -> Result<()> {
 
     let mut last_frame_time = Instant::now();
     let frame_duration = Duration::from_nanos(16639267); // NES NTSC ~60.098 Hz
+
+    // Simple High-pass filter (DC blocker) state
+    let mut prev_apu_sample = 0.0;
+    let mut filtered_sample = 0.0;
 
     if tracing {
         // Run in headless mode for tracing
@@ -154,16 +164,34 @@ fn main() -> Result<()> {
             // Step emulator for one frame if it's time
             if last_frame_time.elapsed() >= frame_duration {
                 let mut cycles = 0;
+                let mut apu_sum = 0.0;
+                let mut apu_count = 0;
+
                 while cycles < 29781 {
                     let step_cycles = nes.tick();
                     cycles += step_cycles;
+
+                    // Accumulate APU output for averaging (Oversampling)
+                    let current_output = nes.bus.apu.output();
+                    apu_sum += current_output * step_cycles as f32;
+                    apu_count += step_cycles as i32;
 
                     audio_samples_needed += step_cycles as f64 * samples_per_cpu_cycle;
                     if audio_samples_needed >= 1.0 {
                         let mut buffer = audio_buffer.lock().unwrap();
                         if buffer.len() < 4096 {
                             for _ in 0..audio_samples_needed as i32 {
-                                buffer.push(nes.bus.apu.output());
+                                let avg_sample = if apu_count > 0 { apu_sum / apu_count as f32 } else { current_output };
+                                
+                                // Reset accumulator
+                                apu_sum = 0.0;
+                                apu_count = 0;
+
+                                // DC Blocker (High-pass filter at ~20Hz)
+                                filtered_sample = avg_sample - prev_apu_sample + 0.999 * filtered_sample;
+                                prev_apu_sample = avg_sample;
+                                
+                                buffer.push_back(filtered_sample);
                             }
                         }
                         audio_samples_needed -= audio_samples_needed as i32 as f64;
