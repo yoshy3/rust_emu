@@ -12,6 +12,9 @@ pixels = "0.13"
 winit = "0.28"
 winit_input_helper = "0.14"
 anyhow = "1.0"
+lazy_static = "1.4"
+bitflags = "2.4"
+cpal = "0.15"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11"
