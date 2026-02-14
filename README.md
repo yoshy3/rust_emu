@@ -2,6 +2,10 @@
 
 A Nintendo Entertainment System (NES) emulator written in Rust, targeting generic desktop platforms (Windows/Mac/Linux) and WebAssembly (WASM).
 
+> [!NOTE]
+> **Vibe Coding**: This project was developed through "Vibe Coding"—a collaborative AI-native development process.
+> **Acknowledgements**: Special thanks to **Gemini code assist** for providing the core reasoning, architectural guidance, and implementation support that brought this emulator to life.
+
 ## Features
 - **Cross-Platform**: Runs natively on desktop and in modern web browsers.
 - **Rendering**: Uses `pixels` for hardware-accelerated 2D pixel buffer rendering.
@@ -32,12 +36,30 @@ Use `Esc` to exit.
    ```
 3. Open `http://localhost:8000` in your browser.
 
+## Controls
+
+| NES Button | Desktop (Cargo) | Web (WASM) |
+|------------|-----------------|------------|
+| **A**      | `Z`             | `Z`        |
+| **B**      | `X`             | `X`        |
+| **Select** | `Right Shift`   | `Shift`    |
+| **Start**  | `Enter`         | `Enter`    |
+| **Up**     | `Up Arrow`      | `Up Arrow` |
+| **Down**   | `Down Arrow`    | `Down Arrow` |
+| **Left**   | `Left Arrow`    | `Left Arrow` |
+| **Right**  | `Right Arrow`   | `Right Arrow` |
+| **Exit**   | `Esc`           | -          |
+
 ## Project Structure
-- `src/main.rs`: Desktop entry point.
-- `src/lib.rs`: Shared library & Web entry point.
-- `src/cpu.rs`: 6502 CPU Implementation.
-- `src/ppu.rs`: PPU (Picture Processing Unit) logic.
-- `src/bus.rs`: Memory Bus.
+- `src/main.rs`: Desktop hardware interface (pixels + cpal).
+- `src/lib.rs`: WebAssembly bridge and shared emulator instance.
+- `src/cpu.rs`: 6502 CPU core with cycle-accurate opcode execution.
+- `src/ppu.rs`: Picture Processing Unit logic, supporting background and sprite rendering.
+- `src/apu.rs`: Audio Processing Unit with support for Pulse, Triangle, and Noise channels.
+- `src/bus.rs`: System memory bus handling memory mapping and I/O.
+- `src/cartridge.rs`: iNES format loader and mapper implementations.
+- `src/joypad.rs`: Input state management for the NES controllers.
+- `src/opcodes.rs`: Detailed instruction set and addressing mode definitions.
 
 ## License
 MIT
