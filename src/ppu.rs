@@ -570,8 +570,8 @@ impl Ppu {
             self.sprite_latch_attr[i as usize] = attr;
             
             // Fetch Pattern Data
-            let mut addr_lo: u16 = 0;
-            let mut addr_hi: u16 = 0;
+            let addr_lo: u16;
+            let addr_hi: u16;
             
             let flip_v = (attr & 0x80) != 0;
             let flip_h = (attr & 0x40) != 0;
