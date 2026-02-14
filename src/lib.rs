@@ -36,6 +36,16 @@ pub struct Nes {
     pub cpu: Cpu,
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(skip))]
     pub bus: Bus,
+
+    // Audio state
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen(skip))]
+    pub audio_samples: Vec<f32>,
+    pub audio_sample_rate: f32,
+    audio_samples_needed: f64,
+    apu_sum: f32,
+    apu_count: u32,
+    prev_apu_sample: f32,
+    filtered_sample: f32,
 }
 
 impl Nes {
@@ -44,7 +54,17 @@ impl Nes {
         let ppu = Ppu::new(rom.screen_mirroring, rom.chr_rom);
         let bus = Bus::new(ppu, rom.prg_rom);
         let cpu = Cpu::new();
-        Self { cpu, bus }
+        Self { 
+            cpu, 
+            bus,
+            audio_samples: Vec::with_capacity(4096),
+            audio_sample_rate: 44100.0,
+            audio_samples_needed: 0.0,
+            apu_sum: 0.0,
+            apu_count: 0,
+            prev_apu_sample: 0.0,
+            filtered_sample: 0.0,
+        }
     }
 
     pub fn set_joypad_button(&mut self, button: crate::joypad::JoypadButton, status: bool) {
@@ -97,7 +117,42 @@ impl Nes {
             self.cpu.nmi(&mut self.bus);
         }
 
+        // Audio logic
+        let step_cycles = cycles as u32;
+        let current_output = self.bus.apu.output();
+        self.apu_sum += current_output * step_cycles as f32;
+        self.apu_count += step_cycles;
+
+        self.audio_samples_needed += step_cycles as f64 * (self.audio_sample_rate as f64 / 1789773.0);
+        if self.audio_samples_needed >= 1.0 {
+            let num_samples = self.audio_samples_needed as i32;
+            for _ in 0..num_samples {
+                let avg_sample = if self.apu_count > 0 { self.apu_sum / self.apu_count as f32 } else { current_output };
+                
+                // DC Blocker (High-pass filter at ~20Hz)
+                self.filtered_sample = avg_sample - self.prev_apu_sample + 0.999 * self.filtered_sample;
+                self.prev_apu_sample = avg_sample;
+                
+                // Cap buffer size to avoid memory leaks if JS doesn't consume
+                if self.audio_samples.len() < 8192 {
+                    self.audio_samples.push(self.filtered_sample);
+                }
+            }
+            
+            if num_samples > 0 {
+                self.apu_sum = 0.0;
+                self.apu_count = 0;
+            }
+            self.audio_samples_needed -= num_samples as f64;
+        }
+
         cycles as usize
+    }
+
+    pub fn get_audio_samples(&mut self) -> Vec<f32> {
+        let mut samples = Vec::new();
+        std::mem::swap(&mut samples, &mut self.audio_samples);
+        samples
     }
 
     pub fn draw(&self, frame: &mut [u8]) {

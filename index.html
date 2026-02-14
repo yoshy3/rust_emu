@@ -243,6 +243,8 @@
         const file = e.dataTransfer.files[0];
         if (!file) return;
 
+        initAudio();
+
         if (file.name.toLowerCase().endsWith('.nes')) {
           try {
             statusEl.innerText = "Loading " + file.name + "...";
@@ -271,6 +273,7 @@
       };
 
       window.addEventListener('keydown', (e) => {
+        initAudio();
         if (keyMap[e.key] !== undefined) {
           nes.set_joypad_button_wasm(keyMap[e.key], true);
         }
@@ -280,6 +283,22 @@
           nes.set_joypad_button_wasm(keyMap[e.key], false);
         }
       });
+
+      // AUDIO SETUP
+      let audioCtx = null;
+      let nextAudioTime = 0;
+
+      const initAudio = () => {
+        if (!audioCtx) {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+          nextAudioTime = audioCtx.currentTime;
+          console.log("[Audio] Context initialized.");
+        }
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume();
+          console.log("[Audio] Context resumed.");
+        }
+      };
 
       // LOOP
       let lastTime = performance.now();
@@ -298,6 +317,27 @@
             const cycles = nes.tick();
             cycleDebt -= cycles;
             if (cycleDebt > 1000000) { cycleDebt = 0; break; }
+          }
+
+          // Audio playback
+          if (audioCtx) {
+            const audioSamples = nes.get_audio_samples();
+            if (audioSamples && audioSamples.length > 0) {
+              const buffer = audioCtx.createBuffer(1, audioSamples.length, 44100);
+              buffer.getChannelData(0).set(audioSamples);
+              const source = audioCtx.createBufferSource();
+              source.buffer = buffer;
+              source.connect(audioCtx.destination);
+
+              const startTime = Math.max(nextAudioTime, audioCtx.currentTime);
+              source.start(startTime);
+              nextAudioTime = startTime + buffer.duration;
+
+              // Prevent buffer bloat if audio falls behind
+              if (nextAudioTime > audioCtx.currentTime + 0.1) {
+                nextAudioTime = audioCtx.currentTime;
+              }
+            }
           }
 
           const buffer = new Uint8Array(width * height * 4);
