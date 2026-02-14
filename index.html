@@ -1,79 +1,319 @@
 <!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <title>Rust NES Emulator</title>
-    <style>
-      body {
-        background-color: #2b2b2b;
-        color: white;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        height: 100vh;
-        margin: 0;
-        font-family: sans-serif;
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rust NES Emulator - Premium Web Experience</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-color: #0f0f13;
+      --card-bg: rgba(255, 255, 255, 0.05);
+      --accent-color: #6366f1;
+      --accent-glow: rgba(99, 102, 241, 0.4);
+      --text-main: #f8fafc;
+      --text-dim: #94a3b8;
+      --border-color: rgba(255, 255, 255, 0.1);
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 40px 0;
+      font-family: 'Outfit', sans-serif;
+      background-image: radial-gradient(circle at 50% 50%, #1e1b4b 0%, var(--bg-color) 70%);
+    }
+
+    .container {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      padding: 40px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      animation: fadeIn 0.8s ease-out;
+      width: fit-content;
+    }
+
+    h1 {
+      margin: 0 0 8px 0;
+      font-weight: 600;
+      font-size: 2.5rem;
+      letter-spacing: -0.02em;
+      background: linear-gradient(to right, #fff, #94a3b8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    #status {
+      margin-bottom: 24px;
+      color: var(--text-dim);
+      font-weight: 300;
+      font-size: 1rem;
+      letter-spacing: 0.02em;
+    }
+
+    canvas {
+      image-rendering: pixelated;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      box-shadow: 0 0 40px var(--accent-glow);
+      width: 768px;
+      height: 720px;
+      transition: transform 0.3s ease;
+    }
+
+    canvas:hover {
+      transform: scale(1.02);
+    }
+
+    .controls-hint {
+      margin-top: 32px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+
+    .key-cap {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 4px 10px;
+      border-radius: 6px;
+      border-bottom: 2px solid rgba(255, 255, 255, 0.2);
+      color: var(--text-main);
+      font-weight: 600;
+      margin-right: 6px;
+    }
+
+    #drop-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(15, 23, 42, 0.9);
+      backdrop-filter: blur(8px);
+      border: 4px dashed var(--accent-color);
+      z-index: 9999;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      font-size: 2.5rem;
+      pointer-events: none;
+      color: white;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    #drop-overlay svg {
+      width: 80px;
+      height: 80px;
+      margin-bottom: 20px;
+      stroke: var(--accent-color);
+      animation: float 2s infinite ease-in-out;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
       }
-      canvas {
-        image-rendering: pixelated;
-        border: 2px solid #555;
-        width: 512px; /* 2x scale */
-        height: 480px;
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
       }
-    </style>
-  </head>
-  <body>
-    <h1>Rust NES Emulator</h1>
-    <p>Drag and drop a .nes ROM file here (Not implemented yet - running test pattern)</p>
+    }
+
+    @keyframes float {
+
+      0%,
+      100% {
+        transform: translateY(0);
+      }
+
+      50% {
+        transform: translateY(-10px);
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>NES Emulator</h1>
+    <div id="status">Loading Wasm...</div>
     <canvas id="nes-canvas" width="256" height="240"></canvas>
-    <script type="module">
-      import init, { Nes } from './pkg/rust_emu.js';
 
-      async function run() {
+    <div class="controls-hint">
+      <div><span class="key-cap">Z</span> A</div>
+      <div><span class="key-cap">X</span> B</div>
+      <div><span class="key-cap">Enter</span> Start</div>
+      <div><span class="key-cap">Shift</span> Select</div>
+      <div><span class="key-cap">↑↓←→</span> D-Pad</div>
+    </div>
+  </div>
+
+  <div id="drop-overlay">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+        d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+    </svg>
+    Drop .nes ROM to play
+  </div>
+
+  <script type="module">
+    import init, { Nes } from './pkg/rust_emu.js';
+
+    async function run() {
+      const statusEl = document.getElementById('status');
+      const overlay = document.getElementById('drop-overlay');
+      const canvas = document.getElementById('nes-canvas');
+      const ctx = canvas.getContext('2d');
+      const width = 256;
+      const height = 240;
+      const imageData = ctx.createImageData(width, height);
+      const data = imageData.data;
+
+      console.log("[JS] Starting run()...");
+      try {
         await init();
-        
-        const canvas = document.getElementById('nes-canvas');
-        const ctx = canvas.getContext('2d');
-        const width = 256;
-        const height = 240;
+        console.log("[JS] Wasm initialized.");
+        statusEl.innerText = "Drag & Drop a .nes file here";
+      } catch (e) {
+        console.error("[JS] Wasm init failed:", e);
+        statusEl.innerText = "Error initializing Wasm.";
+        return;
+      }
 
-        // ImageData buffer for canvas
-        const imageData = ctx.createImageData(width, height);
-        // Create Uint8ClampedArray view on the buffer
-        const data = imageData.data;
+      const nes = Nes.new();
+      nes.reset();
 
-        const nes = Nes.new();
-        nes.reset();
+      // DRAG & DROP
+      let dragCounter = 0;
 
-        function step() {
-            // Tick emulation
-            // In real emulator, we run many ticks per frame ~29780 CPU cycles
-            // For now, simpler verification
-            nes.tick();
+      const handleDragEnter = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounter++;
+        overlay.style.display = 'flex';
+      };
 
-            // Draw to canvas
-            // We need to pass a buffer to draw
-            // This is tricky because we can't easily pass 'data' directly to wasm if it expects &mut [u8]
-            // We need to allocate buffer in WASM memory and copy it out, or pass a specific view.
-            
-            // Simpler approach for now: Allocate buffer in JS, pass to WASM
-            // BUT wasm-bindgen handles &mut [u8] by copying back and forth which is slow but works.
-            
-            const buffer = new Uint8Array(width * height * 4);
-            nes.draw(buffer);
-            
-            // Copy buffer back to canvas data
-            data.set(buffer);
-            ctx.putImageData(imageData, 0, 0);
+      const handleDragOver = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'copy';
+      };
 
-            requestAnimationFrame(step);
+      const handleDragLeave = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounter--;
+        if (dragCounter <= 0) {
+          dragCounter = 0;
+          overlay.style.display = 'none';
         }
+      };
 
+      const handleDrop = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounter = 0;
+        overlay.style.display = 'none';
+
+        const file = e.dataTransfer.files[0];
+        if (!file) return;
+
+        if (file.name.toLowerCase().endsWith('.nes')) {
+          try {
+            statusEl.innerText = "Loading " + file.name + "...";
+            const arrayBuffer = await file.arrayBuffer();
+            const romData = new Uint8Array(arrayBuffer);
+            nes.load_rom(romData);
+            statusEl.innerText = "Playing: " + file.name;
+          } catch (err) {
+            console.error("[D&D] Error loading ROM:", err);
+            statusEl.innerText = "Load failed.";
+          }
+        } else {
+          alert("Please drop a .nes file.");
+        }
+      };
+
+      window.addEventListener('dragenter', handleDragEnter);
+      window.addEventListener('dragover', handleDragOver);
+      window.addEventListener('dragleave', handleDragLeave);
+      window.addEventListener('drop', handleDrop);
+
+      // KEYS
+      const keyMap = {
+        'z': 0, 'x': 1, 'Shift': 2, 'Enter': 3,
+        'ArrowUp': 4, 'ArrowDown': 5, 'ArrowLeft': 6, 'ArrowRight': 7
+      };
+
+      window.addEventListener('keydown', (e) => {
+        if (keyMap[e.key] !== undefined) {
+          nes.set_joypad_button_wasm(keyMap[e.key], true);
+        }
+      });
+      window.addEventListener('keyup', (e) => {
+        if (keyMap[e.key] !== undefined) {
+          nes.set_joypad_button_wasm(keyMap[e.key], false);
+        }
+      });
+
+      // LOOP
+      let lastTime = performance.now();
+      let cycleDebt = 0;
+      const CPU_CLOCK = 1789773;
+
+      function step(currentTime) {
+        try {
+          const dt = (currentTime - lastTime) / 1000.0;
+          lastTime = currentTime;
+
+          const effectiveDt = Math.min(dt, 0.1);
+          cycleDebt += effectiveDt * CPU_CLOCK;
+
+          while (cycleDebt >= 1) {
+            const cycles = nes.tick();
+            cycleDebt -= cycles;
+            if (cycleDebt > 1000000) { cycleDebt = 0; break; }
+          }
+
+          const buffer = new Uint8Array(width * height * 4);
+          nes.draw(buffer);
+          data.set(buffer);
+          ctx.putImageData(imageData, 0, 0);
+        } catch (e) {
+          console.error("[LOOP] Emulation error:", e);
+          return;
+        }
         requestAnimationFrame(step);
       }
+      requestAnimationFrame(step);
+    }
+    run().catch(e => console.error("[JS] Fatal error:", e));
+  </script>
+</body>
 
-      run();
-    </script>
-  </body>
 </html>

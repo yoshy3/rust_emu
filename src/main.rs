@@ -61,7 +61,7 @@ fn main() -> Result<()> {
         full_rom
     };
 
-    let mut nes = rust_emu::Nes::new(&rom_data);
+    let mut nes = rust_emu::Nes::new_with_rom(&rom_data);
     nes.reset();
 
     // Audio Setup
