@@ -63,5 +63,15 @@ Use `Esc` to exit.
 - `src/joypad.rs`: Input state management for the NES controllers.
 - `src/opcodes.rs`: Detailed instruction set and addressing mode definitions.
 
+## Troubleshooting
+
+### Wayland Support (Linux)
+
+If you encounter issues on Linux with Wayland related to buffer sizes or surface errors (e.g. `Buffer size must be an integer multiple of the buffer_scale`), you can try running the emulator using XWayland by unsetting the `WAYLAND_DISPLAY` environment variable:
+
+```bash
+WAYLAND_DISPLAY= cargo run -- path/to/game.nes
+```
+
 ## License
 MIT

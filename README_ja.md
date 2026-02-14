@@ -65,5 +65,15 @@ cargo run -- /path/to/game.nes
 - `src/joypad.rs`: コントローラーの入力状態管理。
 - `src/opcodes.rs`: 命令セットとアドレッシングモードの定義。
 
+## トラブルシューティング
+
+### Linux Wayland 環境での起動について
+
+Linux の Wayland 環境において、バッファサイズやサーフェイスエラー（例: `Buffer size must be an integer multiple of the buffer_scale`）が発生する場合は、以下のように `WAYLAND_DISPLAY` 環境変数を空にして XWayland で実行することで解決する場合があります：
+
+```bash
+WAYLAND_DISPLAY= cargo run -- path/to/game.nes
+```
+
 ## ライセンス
 MIT
