@@ -77,3 +77,23 @@ WAYLAND_DISPLAY= cargo run -- path/to/game.nes
 
 ## ライセンス
 MIT
+
+## GitHub Pages への公開（WASM）
+
+このリポジトリには、WASM ビルド成果物を GitHub Pages に公開する GitHub Actions ワークフローが含まれています。
+
+- 実行トリガー: Git Tag を push したとき（例: `v0.2.1`）
+- ワークフロー: `.github/workflows/deploy-pages.yml`
+- 公開用ディレクトリ（artifact ルート）: `public/`
+- `public/` に配置される内容: `index.html` と `pkg/`（`wasm-pack` の生成物）
+
+### 初回のみ必要な設定
+
+GitHub リポジトリの Settings で、**Pages** の公開元を **GitHub Actions** に設定してください。
+
+### リリース手順
+
+```bash
+git tag v0.2.1
+git push origin v0.2.1
+```
