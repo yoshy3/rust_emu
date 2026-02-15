@@ -69,6 +69,14 @@ cargo run -- /path/to/game.nes
 
 ## トラブルシューティング
 
+### macOS で「開発元を検証できないため開けません」と表示される場合
+
+Release からダウンロードしたバイナリを実行しようとした際に、「"rust_emu"は開発元を検証できないため開けません」といった警告が表示される場合は、以下のコマンドで検疫属性（quarantine attribute）を削除してください：
+
+```bash
+xattr -d com.apple.quarantine rust_emu
+```
+
 ### Linux Wayland 環境での起動について
 
 Linux の Wayland 環境において、バッファサイズやサーフェイスエラー（例: `Buffer size must be an integer multiple of the buffer_scale`）が発生する場合は、以下のように `WAYLAND_DISPLAY` 環境変数を空にして XWayland で実行することで解決する場合があります：

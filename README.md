@@ -67,6 +67,14 @@ Use `Esc` to exit.
 
 ## Troubleshooting
 
+### macOS "Unverified Developer" Error
+
+If you see a message saying *"rust_emu" cannot be opened because the developer cannot be verified* or similar when running the release binary, you need to remove the quarantine attribute:
+
+```bash
+xattr -d com.apple.quarantine rust_emu
+```
+
 ### Wayland Support (Linux)
 
 If you encounter issues on Linux with Wayland related to buffer sizes or surface errors (e.g. `Buffer size must be an integer multiple of the buffer_scale`), you can try running the emulator using XWayland by unsetting the `WAYLAND_DISPLAY` environment variable:
