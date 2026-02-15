@@ -13,6 +13,11 @@ pub fn log(s: &str) {
     println!("{}", s);
 }
 
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn get_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 pub mod bus;
 pub mod cpu;
 pub mod ppu;

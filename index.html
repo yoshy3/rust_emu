@@ -59,6 +59,7 @@
       font-size: 2.5rem;
       letter-spacing: -0.02em;
       background: linear-gradient(to right, #fff, #94a3b8);
+      background-clip: text;
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
@@ -171,6 +172,9 @@
       <div><span class="key-cap">Shift</span> Select</div>
       <div><span class="key-cap">↑↓←→</span> D-Pad</div>
     </div>
+    <div id="version"
+      style="position: absolute; bottom: 10px; right: 10px; color: var(--text-dim); font-size: 0.8rem; opacity: 0.7;">
+    </div>
   </div>
 
   <div id="drop-overlay">
@@ -182,10 +186,11 @@
   </div>
 
   <script type="module">
-    import init, { Nes } from './pkg/rust_emu.js';
+    import init, { Nes, get_version } from './pkg/rust_emu.js';
 
     async function run() {
       const statusEl = document.getElementById('status');
+      const versionEl = document.getElementById('version');
       const overlay = document.getElementById('drop-overlay');
       const canvas = document.getElementById('nes-canvas');
       const ctx = canvas.getContext('2d');
@@ -199,6 +204,7 @@
         await init();
         console.log("[JS] Wasm initialized.");
         statusEl.innerText = "Drag & Drop a .nes file here";
+        versionEl.innerText = "v" + get_version();
       } catch (e) {
         console.error("[JS] Wasm init failed:", e);
         statusEl.innerText = "Error initializing Wasm.";

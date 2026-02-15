@@ -25,7 +25,7 @@ fn main() -> Result<()> {
     let window = {
         let size = LogicalSize::new(WIDTH as f64 * 3.0, HEIGHT as f64 * 3.0);
         WindowBuilder::new()
-            .with_title("Rust NES Emulator")
+            .with_title(format!("Rust NES Emulator v{}", env!("CARGO_PKG_VERSION")))
             .with_inner_size(size)
             .with_min_inner_size(LogicalSize::new(WIDTH as f64, HEIGHT as f64))
             .build(&event_loop)
