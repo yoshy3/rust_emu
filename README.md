@@ -2,6 +2,8 @@
 
 A Nintendo Entertainment System (NES) emulator written in Rust, targeting generic desktop platforms (Windows/Mac/Linux) and WebAssembly (WASM).
 
+[**Play in Browser**](https://yoshy3.github.io/rust_emu/)
+
 [日本語のREADMEはこちら](./README_ja.md)
 
 > [!NOTE]

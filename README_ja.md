@@ -2,6 +2,8 @@
 
 Rustで書かれた、デスクトップ（Windows/Mac/Linux）およびWebAssembly（WASM）対応のファミリーコンピュータ（NES）エミュレータです。
 
+[**ブラウザでプレイ**](https://yoshy3.github.io/rust_emu/)
+
 [English README](./README.md)
 
 > [!NOTE]
