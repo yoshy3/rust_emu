@@ -11,7 +11,7 @@ clean:
 	$(DOCKER_COMPOSE) run --rm nesdev make -C projects/$(PROJECT) clean
 
 run: build
-	cd .. && cargo run -- $(ROM_PATH)
+	cd .. && cargo run --release -- $(ROM_PATH)
 
 shell:
 	$(DOCKER_COMPOSE) run --rm nesdev bash
