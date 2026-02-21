@@ -1,31 +1,31 @@
 # game_examples
 
-このディレクトリは、ファミコン（NES）向けゲーム開発環境のルートです。
+This directory is the root of the NES game development environment.
 
-- 各ゲームプロジェクトは `projects/` 配下に作成します
-- 生成したROM（`.nes`）や関連アセットもこの配下で管理します
-- このリポジトリのエミュレータ（`rust_emu`）で動作確認できます
+- Create each game project under `projects/`
+- Manage generated ROM files (`.nes`) and related assets here
+- Verify behavior with this repository's emulator (`rust_emu`)
 
-## 前提
+## Prerequisites
 
-- Docker Desktop がインストール済み
-- `docker compose` コマンドが利用可能
+- Docker Desktop installed
+- `docker compose` command available
 
-## 使い方
+## Usage
 
-`game_examples` で実行:
+Run from `game_examples`:
 
 ```bash
 make build PROJECT=hello_nes
 ```
 
-Breakoutサンプルをビルドする場合:
+To build the Breakout sample:
 
 ```bash
 make build PROJECT=breakout
 ```
 
-ビルドしてそのままエミュレータを起動する場合:
+To build and launch the emulator:
 
 ```bash
 make run PROJECT=hello_nes
@@ -35,58 +35,59 @@ make run PROJECT=hello_nes
 make run PROJECT=breakout
 ```
 
-初回はDockerイメージのビルドが走ります。成功すると以下が生成されます。
+On the first run, Docker image build is triggered. After success, for example:
 
 - `projects/hello_nes/build/hello_nes.nes`
 
-## トラブルシューティング（Windows環境で `make` がない場合）
+## Troubleshooting (Windows without `make`)
 
-PowerShell やコマンドプロンプトで次のようなエラーが出る場合があります。
+In PowerShell or Command Prompt, you may see errors like:
 
-- `make : 用語 'make' は、コマンドレット...`
+- `make : The term 'make' is not recognized...`
 - `'make' is not recognized as an internal or external command`
 
-このリポジトリでは実際のビルドは Docker コンテナ内で行うため、`make` の代わりに `docker compose run` で直接実行できます。
+In this repository, the actual build runs inside a Docker container, so you can run `docker compose run` directly instead of `make`.
 
 ```bash
 docker compose run --rm nesdev make build PROJECT=hello_nes
 ```
 
-Breakout の場合:
+For Breakout:
 
 ```bash
 docker compose run --rm nesdev make build PROJECT=breakout
 ```
 
-ビルド後にエミュレータまで起動する場合:
+To build and then launch the emulator:
 
 ```bash
 docker compose run --rm nesdev make run PROJECT=hello_nes
 ```
 
-`make` コマンドを使いたい場合は、Git Bash / WSL / MSYS2 など `make` が使えるシェルで `game_examples` の `Makefile` を実行してください。
+If you want to use the `make` command directly, run the `Makefile` in `game_examples` from a shell that includes `make` (for example Git Bash / WSL / MSYS2).
 
-もしくは、Windows向けに `make` をインストールして環境変数に追加する方法もあります。
-```
+Alternatively, install `make` on Windows and add it to PATH:
+
+```bash
 winget install -e --id GnuWin32.Make
 ```
 
-`C:\Program Files (x86)\GnuWin32\bin` を環境変数 PATH に追加してください。
+Add `C:\Program Files (x86)\GnuWin32\bin` to your environment variable `PATH`.
 
-## 追加した構成
+## Added Structure
 
-- `docker/Dockerfile`: NES開発ツールチェーン（`cc65`, `make`）
-- `docker-compose.yml`: 開発コンテナ定義
-- `Makefile`: Docker経由のビルド/クリーン/シェル操作
-- `projects/hello_nes`: 最小ROM生成サンプル
-- `projects/breakout`: ブロック崩しサンプル
+- `docker/Dockerfile`: NES development toolchain (`cc65`, `make`)
+- `docker-compose.yml`: Development container definition
+- `Makefile`: Build/clean/shell operations via Docker
+- `projects/hello_nes`: Minimal ROM generation sample
+- `projects/breakout`: Breakout sample
 
-## 実行イメージ
+## Screenshots
 
 ### Breakout
 
-![Breakoutの実行画面](./images/breakout.png)
+![Breakout screenshot](./images/breakout.png)
 
 ### Hello NES
 
-![Hello NESの実行画面](./images/hello_nes.png)
+![Hello NES screenshot](./images/hello_nes.png)
