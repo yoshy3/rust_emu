@@ -1,0 +1,64 @@
+name: Game Release
+
+on:
+  push:
+    tags:
+      - "g*"
+
+permissions:
+  contents: write
+
+jobs:
+  game-release:
+    name: Release game examples
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate tag format
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^g[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag '$tag' is invalid. Expected format: g<semver> (example: g1.2.3 or g1.2.3-rc.1)"
+            exit 1
+          fi
+
+      - name: Build all game projects
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd game_examples
+          mapfile -t projects < <(find projects -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+          if [ "${#projects[@]}" -eq 0 ]; then
+            echo "No projects found under game_examples/projects"
+            exit 1
+          fi
+
+          for project in "${projects[@]}"; do
+            echo "Building ${project}"
+            make build PROJECT="${project}"
+          done
+
+      - name: Create zip archive with all NES files
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t nes_files < <(find game_examples/projects -type f -name '*.nes' | sort)
+          if [ "${#nes_files[@]}" -eq 0 ]; then
+            echo "No .nes files were generated."
+            exit 1
+          fi
+
+          asset_name="game_examples-${GITHUB_REF_NAME}.zip"
+          zip -r "${asset_name}" "${nes_files[@]}"
+          echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.package.outputs.asset_name }}

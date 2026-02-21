@@ -105,3 +105,18 @@ In GitHub repository settings, set **Pages** source to **GitHub Actions**.
 git tag v0.2.1
 git push origin v0.2.1
 ```
+
+## Game Examples Release
+
+This repository also includes a dedicated workflow for `game_examples` ROM releases.
+
+- Trigger: push a Git tag starting with `g` and using semantic versioning (e.g. `g1.2.3`, `g1.2.3-rc.1`)
+- Workflow: `.github/workflows/game-release.yml`
+- Output: one ZIP archive containing all generated `.nes` files under `game_examples/projects/`
+
+### Game release flow
+
+```bash
+git tag g1.2.3
+git push origin g1.2.3
+```

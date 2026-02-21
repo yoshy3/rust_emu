@@ -107,3 +107,18 @@ GitHub リポジトリの Settings で、**Pages** の公開元を **GitHub Acti
 git tag v0.2.1
 git push origin v0.2.1
 ```
+
+## game_examples のリリース
+
+このリポジトリには、`game_examples` の ROM リリース専用ワークフローも含まれています。
+
+- 実行トリガー: `g` で始まるセマンティックバージョンの Git タグを push（例: `g1.2.3`, `g1.2.3-rc.1`）
+- ワークフロー: `.github/workflows/game-release.yml`
+- 成果物: `game_examples/projects/` 配下で生成されたすべての `.nes` を1つの ZIP にまとめて公開
+
+### game_examples リリース手順
+
+```bash
+git tag g1.2.3
+git push origin g1.2.3
+```
