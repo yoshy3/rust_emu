@@ -48,14 +48,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t nes_files < <(find game_examples/projects -type f -name '*.nes' | sort)
-          if [ "${#nes_files[@]}" -eq 0 ]; then
+          rm -rf game_examples
+          mkdir -p game_examples
+
+          mapfile -t projects < <(find game_examples/projects -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
+          copied_count=0
+          for project in "${projects[@]}"; do
+            mapfile -t nes_files < <(find "game_examples/projects/${project}" -type f -name '*.nes' | sort)
+            if [ "${#nes_files[@]}" -gt 1 ]; then
+              echo "Multiple .nes files found in project '${project}'. Please keep only one output file."
+              printf '%s\n' "${nes_files[@]}"
+              exit 1
+            fi
+
+            if [ "${#nes_files[@]}" -eq 1 ]; then
+              cp "${nes_files[0]}" "game_examples/${project}.nes"
+              copied_count=$((copied_count + 1))
+            fi
+          done
+
+          if [ "${copied_count}" -eq 0 ]; then
             echo "No .nes files were generated."
             exit 1
           fi
 
           asset_name="game_examples-${GITHUB_REF_NAME}.zip"
-          zip -r "${asset_name}" "${nes_files[@]}"
+          zip -r "${asset_name}" game_examples
           echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
 
       - name: Upload release asset
