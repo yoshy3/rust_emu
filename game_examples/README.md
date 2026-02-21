@@ -19,10 +19,20 @@
 make build PROJECT=hello_nes
 ```
 
+Breakoutサンプルをビルドする場合:
+
+```bash
+make build PROJECT=breakout
+```
+
 ビルドしてそのままエミュレータを起動する場合:
 
 ```bash
 make run PROJECT=hello_nes
+```
+
+```bash
+make run PROJECT=breakout
 ```
 
 初回はDockerイメージのビルドが走ります。成功すると以下が生成されます。
@@ -35,3 +45,4 @@ make run PROJECT=hello_nes
 - `docker-compose.yml`: 開発コンテナ定義
 - `Makefile`: Docker経由のビルド/クリーン/シェル操作
 - `projects/hello_nes`: 最小ROM生成サンプル
+- `projects/breakout`: ブロック崩しサンプル
