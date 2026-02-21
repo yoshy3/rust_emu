@@ -26,6 +26,7 @@
     jsr clear_nametable
     jsr setup_brick_attributes
     jsr init_game
+    jsr init_audio
     jsr draw_all_bricks
     jsr draw_hud
 
@@ -41,6 +42,8 @@
 main_loop:
     jsr read_controller
     jsr update_game
+    jsr update_sfx
+    jsr update_bgm
     jsr draw_oam
 
     jsr wait_vblank
@@ -144,6 +147,296 @@ main_loop:
     sta brick_dirty_flag
     sta status_dirty_flag
     sta hud_dirty_flag
+    rts
+.endproc
+
+.proc init_audio
+    lda #$00
+    sta $4015
+    lda #$07
+    sta $4015
+    jsr stop_sfx
+
+    lda #$98
+    sta $4004
+    lda #$00
+    sta $4005
+
+    lda #$8F
+    sta $4008
+
+    lda #$00
+    sta sfx_kind
+    sta sfx_timer
+    sta sfx_step
+    sta sfx_len
+
+    sta bgm_step
+    lda #$06
+    sta bgm_tick
+    jsr bgm_apply_step
+    rts
+.endproc
+
+.proc stop_sfx
+    lda #$30
+    sta $4000
+    lda #$00
+    sta $4001
+    sta $4002
+    sta $4003
+    rts
+.endproc
+
+.proc update_sfx
+    lda sfx_timer
+    beq @done
+    dec sfx_timer
+    bne @done
+
+    lda sfx_kind
+    cmp #$04
+    bcc @finish_simple
+
+    inc sfx_step
+    lda sfx_step
+    cmp sfx_len
+    bcc @next_jingle_note
+
+    jsr stop_sfx
+    lda #$00
+    sta sfx_kind
+    sta sfx_timer
+    sta sfx_step
+    sta sfx_len
+
+    lda game_state
+    bne @done
+    jsr stop_sfx
+    jsr bgm_apply_step
+    rts
+
+@next_jingle_note:
+    jsr sfx_apply_kind
+    rts
+
+@finish_simple:
+    jsr stop_sfx
+    lda #$00
+    sta sfx_kind
+
+    lda game_state
+    bne @done
+    jsr bgm_apply_step
+@done:
+    rts
+.endproc
+
+.proc update_bgm
+    lda game_state
+    beq @active
+    rts
+
+@active:
+    lda bgm_tick
+    beq @advance
+    dec bgm_tick
+    rts
+
+@advance:
+    lda #$06
+    sta bgm_tick
+
+    ldx bgm_step
+    inx
+    cpx #$10
+    bcc @store
+    ldx #$00
+@store:
+    stx bgm_step
+    jsr bgm_apply_step
+    rts
+.endproc
+
+.proc stop_bgm
+    lda #$30
+    sta $4004
+    lda #$00
+    sta $4005
+    sta $4006
+    sta $4007
+
+    lda #$80
+    sta $4008
+    lda #$00
+    sta $400A
+    sta $400B
+    rts
+.endproc
+
+.proc bgm_apply_step
+    ldx bgm_step
+
+    lda sfx_timer
+    bne @skip_pulse1
+
+    lda #$9A
+    sta $4000
+    lda #$00
+    sta $4001
+    lda bgm_p1_lo, x
+    sta $4002
+    lda bgm_p1_hi, x
+    sta $4003
+
+@skip_pulse1:
+    lda #$98
+    sta $4004
+    lda #$00
+    sta $4005
+    lda bgm_p2_lo, x
+    sta $4006
+    lda bgm_p2_hi, x
+    sta $4007
+
+    lda #$8F
+    sta $4008
+    lda bgm_tri_lo, x
+    sta $400A
+    lda bgm_tri_hi, x
+    sta $400B
+    rts
+.endproc
+
+.proc trigger_sfx_paddle
+    lda #$01
+    sta sfx_kind
+    lda #$04
+    sta sfx_timer
+    lda #$00
+    sta sfx_step
+    sta sfx_len
+    jsr sfx_apply_kind
+    rts
+.endproc
+
+.proc trigger_sfx_brick
+    lda #$02
+    sta sfx_kind
+    lda #$05
+    sta sfx_timer
+    lda #$00
+    sta sfx_step
+    sta sfx_len
+    jsr sfx_apply_kind
+    rts
+.endproc
+
+.proc trigger_sfx_miss
+    lda #$03
+    sta sfx_kind
+    lda #$10
+    sta sfx_timer
+    lda #$00
+    sta sfx_step
+    sta sfx_len
+    jsr sfx_apply_kind
+    rts
+.endproc
+
+.proc trigger_sfx_clear
+    lda #$04
+    sta sfx_kind
+    lda #$00
+    sta sfx_step
+    lda #$04
+    sta sfx_len
+    jsr sfx_apply_kind
+    rts
+.endproc
+
+.proc trigger_sfx_gameover
+    lda #$05
+    sta sfx_kind
+    lda #$00
+    sta sfx_step
+    lda #$05
+    sta sfx_len
+    jsr sfx_apply_kind
+    rts
+.endproc
+
+.proc sfx_apply_kind
+    lda #$07
+    sta $4015
+
+    lda sfx_kind
+    cmp #$01
+    bne @check_brick
+    lda #$9F
+    sta $4000
+    lda #$00
+    sta $4001
+    lda #$52
+    sta $4002
+    lda #$F0
+    sta $4003
+    rts
+
+@check_brick:
+    cmp #$02
+    bne @check_miss
+    lda #$8F
+    sta $4000
+    lda #$00
+    sta $4001
+    lda #$78
+    sta $4002
+    lda #$E0
+    sta $4003
+    rts
+
+@check_miss:
+    cmp #$03
+    bne @check_clear
+    lda #$8A
+    sta $4000
+    lda #$00
+    sta $4001
+    lda #$D0
+    sta $4002
+    lda #$D0
+    sta $4003
+    rts
+
+@check_clear:
+    cmp #$04
+    bne @check_gameover
+    ldx sfx_step
+    lda #$9A
+    sta $4000
+    lda #$00
+    sta $4001
+    lda clear_jingle_lo, x
+    sta $4002
+    lda clear_jingle_hi, x
+    sta $4003
+    lda clear_jingle_dur, x
+    sta sfx_timer
+    rts
+
+@check_gameover:
+    ldx sfx_step
+    lda #$9A
+    sta $4000
+    lda #$00
+    sta $4001
+    lda gameover_jingle_lo, x
+    sta $4002
+    lda gameover_jingle_hi, x
+    sta $4003
+    lda gameover_jingle_dur, x
+    sta sfx_timer
     rts
 .endproc
 
@@ -460,11 +753,15 @@ main_loop:
     lda #$01
     sta hud_dirty_flag
 
+    jsr trigger_sfx_miss
+
     lda lives
     bne @respawn
 
     lda #$02
     sta game_state
+    jsr stop_bgm
+    jsr trigger_sfx_gameover
     rts
 
 @respawn:
@@ -533,6 +830,8 @@ main_loop:
     sta ball_vx
 
 @paddle_done:
+    jsr trigger_sfx_paddle
+
     lda paddle_y
     sec
     sbc #$08
@@ -593,6 +892,8 @@ main_loop:
     lda #$01
     sta brick_dirty_flag
 
+    jsr trigger_sfx_brick
+
     inc score
     lda #$01
     sta hud_dirty_flag
@@ -607,6 +908,10 @@ main_loop:
     sta game_state
     sta status_kind
     sta status_dirty_flag
+
+    jsr stop_bgm
+
+    jsr trigger_sfx_clear
 
 @bounce:
     lda ball_vy
@@ -785,6 +1090,41 @@ brick_nt_hi_tbl:
 brick_tile_base_tbl:
     .byte $03, $06, $09, $0C
 
+bgm_p1_lo:
+    .byte $65, $65, $7C, $7C, $8F, $8F, $7C, $00
+    .byte $53, $53, $47, $47, $3F, $3F, $47, $00
+bgm_p1_hi:
+    .byte $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00
+
+bgm_p2_lo:
+    .byte $8F, $8F, $9F, $9F, $BF, $BF, $9F, $00
+    .byte $65, $65, $5A, $5A, $53, $53, $5A, $00
+bgm_p2_hi:
+    .byte $00, $00, $00, $00, $00, $00, $00, $00
+    .byte $00, $00, $00, $00, $00, $00, $00, $00
+
+bgm_tri_lo:
+    .byte $27, $27, $2A, $2A, $2F, $2F, $2A, $00
+    .byte $20, $20, $1D, $1D, $1B, $1B, $1D, $00
+bgm_tri_hi:
+    .byte $01, $01, $01, $01, $01, $01, $01, $00
+    .byte $01, $01, $01, $01, $01, $01, $01, $00
+
+clear_jingle_lo:
+    .byte $53, $47, $3F, $35
+clear_jingle_hi:
+    .byte $00, $00, $00, $00
+clear_jingle_dur:
+    .byte $05, $05, $06, $08
+
+gameover_jingle_lo:
+    .byte $65, $78, $8F, $A7, $D0
+gameover_jingle_hi:
+    .byte $00, $00, $00, $00, $00
+gameover_jingle_dur:
+    .byte $06, $06, $06, $08, $10
+
 .segment "BSS"
 paddle_x:
     .res 1
@@ -847,6 +1187,18 @@ score_tens:
 score_hundreds:
     .res 1
 score_ones:
+    .res 1
+sfx_kind:
+    .res 1
+sfx_timer:
+    .res 1
+sfx_step:
+    .res 1
+sfx_len:
+    .res 1
+bgm_step:
+    .res 1
+bgm_tick:
     .res 1
 
 .segment "VECTORS"
