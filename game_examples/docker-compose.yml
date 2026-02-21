@@ -1,0 +1,8 @@
+services:
+  nesdev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
