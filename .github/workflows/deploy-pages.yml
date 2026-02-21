@@ -3,7 +3,7 @@ name: Deploy WASM to GitHub Pages
 on:
   push:
     tags:
-      - "*"
+      - "v*"
 
 permissions:
   contents: read
