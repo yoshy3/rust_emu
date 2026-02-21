@@ -48,8 +48,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf game_examples
-          mkdir -p game_examples
+          staging_root="_release_staging"
+          staging_dir="${staging_root}/game_examples"
+          rm -rf "${staging_root}"
+          mkdir -p "${staging_dir}"
 
           mapfile -t projects < <(find game_examples/projects -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort)
           copied_count=0
@@ -62,7 +64,7 @@ jobs:
             fi
 
             if [ "${#nes_files[@]}" -eq 1 ]; then
-              cp "${nes_files[0]}" "game_examples/${project}.nes"
+              cp "${nes_files[0]}" "${staging_dir}/${project}.nes"
               copied_count=$((copied_count + 1))
             fi
           done
@@ -73,7 +75,10 @@ jobs:
           fi
 
           asset_name="game_examples-${GITHUB_REF_NAME}.zip"
-          zip -r "${asset_name}" game_examples
+          (
+            cd "${staging_root}"
+            zip -r "../${asset_name}" game_examples
+          )
           echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
 
       - name: Upload release asset
