@@ -83,10 +83,10 @@ winget install -e --id GnuWin32.Make
 
 ## 実行イメージ
 
-### Breakout
-
-![Breakoutの実行画面](./images/breakout.png)
-
 ### Hello NES
 
 ![Hello NESの実行画面](./images/hello_nes.png)
+
+### Breakout
+
+![Breakoutの実行画面](./images/breakout.png)

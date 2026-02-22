@@ -84,10 +84,11 @@ Add `C:\Program Files (x86)\GnuWin32\bin` to your environment variable `PATH`.
 
 ## Screenshots
 
+### Hello NES
+
+![Hello NES screenshot](./images/hello_nes.png)
+
 ### Breakout
 
 ![Breakout screenshot](./images/breakout.png)
 
-### Hello NES
-
-![Hello NES screenshot](./images/hello_nes.png)
