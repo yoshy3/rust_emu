@@ -25,6 +25,12 @@ Breakoutサンプルをビルドする場合:
 make build PROJECT=breakout
 ```
 
+Shootingサンプルをビルドする場合:
+
+```bash
+make build PROJECT=shooting
+```
+
 ビルドしてそのままエミュレータを起動する場合:
 
 ```bash
@@ -33,6 +39,10 @@ make run PROJECT=hello_nes
 
 ```bash
 make run PROJECT=breakout
+```
+
+```bash
+make run PROJECT=shooting
 ```
 
 初回はDockerイメージのビルドが走ります。成功すると以下が生成されます。
@@ -58,6 +68,12 @@ Breakout の場合:
 docker compose run --rm nesdev make build PROJECT=breakout
 ```
 
+Shooting の場合:
+
+```bash
+docker compose run --rm nesdev make build PROJECT=shooting
+```
+
 ビルド後にエミュレータまで起動する場合:
 
 ```bash
@@ -80,6 +96,7 @@ winget install -e --id GnuWin32.Make
 - `Makefile`: Docker経由のビルド/クリーン/シェル操作
 - `projects/hello_nes`: 最小ROM生成サンプル
 - `projects/breakout`: ブロック崩しサンプル
+- `projects/shooting`: 縦スクロールシューティングゲームサンプル
 
 ## 実行イメージ
 
@@ -90,3 +107,7 @@ winget install -e --id GnuWin32.Make
 ### Breakout
 
 ![Breakoutの実行画面](./images/breakout.png)
+
+### Shooting
+
+![Shootingの実行画面](./images/shooting.png)

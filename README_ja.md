@@ -4,6 +4,8 @@ Rustで書かれた、デスクトップ（Windows/Mac/Linux）およびWebAssem
 
 [**ブラウザでプレイ**](https://yoshy3.github.io/rust_emu/)
 
+[**🎮 オリジナルのNESゲームサンプル（ソースコード＆ROM）はこちら**](./game_examples/README_ja.md)
+
 [English README](./README.md)
 
 > [!NOTE]

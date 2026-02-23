@@ -25,6 +25,12 @@ To build the Breakout sample:
 make build PROJECT=breakout
 ```
 
+To build the Shooting game sample:
+
+```bash
+make build PROJECT=shooting
+```
+
 To build and launch the emulator:
 
 ```bash
@@ -33,6 +39,10 @@ make run PROJECT=hello_nes
 
 ```bash
 make run PROJECT=breakout
+```
+
+```bash
+make run PROJECT=shooting
 ```
 
 On the first run, Docker image build is triggered. After success, for example:
@@ -58,6 +68,12 @@ For Breakout:
 docker compose run --rm nesdev make build PROJECT=breakout
 ```
 
+For Shooting:
+
+```bash
+docker compose run --rm nesdev make build PROJECT=shooting
+```
+
 To build and then launch the emulator:
 
 ```bash
@@ -81,6 +97,7 @@ Add `C:\Program Files (x86)\GnuWin32\bin` to your environment variable `PATH`.
 - `Makefile`: Build/clean/shell operations via Docker
 - `projects/hello_nes`: Minimal ROM generation sample
 - `projects/breakout`: Breakout sample
+- `projects/shooting`: Vertical scrolling shooting game sample
 
 ## Screenshots
 
@@ -91,4 +108,8 @@ Add `C:\Program Files (x86)\GnuWin32\bin` to your environment variable `PATH`.
 ### Breakout
 
 ![Breakout screenshot](./images/breakout.png)
+
+### Shooting
+
+![Shooting screenshot](./images/shooting.png)
 

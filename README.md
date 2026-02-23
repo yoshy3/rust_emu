@@ -4,6 +4,8 @@ A Nintendo Entertainment System (NES) emulator written in Rust, targeting generi
 
 [**Play in Browser**](https://yoshy3.github.io/rust_emu/)
 
+[**🎮 Explore NES Game Examples (Source Code & ROMs)**](./game_examples/README.md)
+
 [日本語のREADMEはこちら](./README_ja.md)
 
 > [!NOTE]
