@@ -18,21 +18,28 @@ pub fn get_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-pub mod bus;
-pub mod cpu;
-pub mod ppu;
-pub mod cartridge;
-pub mod opcodes;
-pub mod joypad;
 pub mod apu;
+pub mod bus;
+pub mod cartridge;
+pub mod cpu;
+pub mod joypad;
+pub mod opcodes;
+pub mod ppu;
 
-use cpu::Cpu;
 use bus::Bus;
+use cpu::Cpu;
 use ppu::Ppu;
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub enum JoypadButtonWasm {
-    A, B, Select, Start, Up, Down, Left, Right
+    A,
+    B,
+    Select,
+    Start,
+    Up,
+    Down,
+    Left,
+    Right,
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
@@ -58,10 +65,16 @@ impl Nes {
         let rom = crate::cartridge::Rom::new(&rom_data.to_vec()).unwrap();
         let mut ppu = Ppu::new(rom.screen_mirroring, rom.chr_rom);
         ppu.mapper = rom.mapper;
-        let bus = Bus::new(ppu, rom.prg_rom, rom.mapper);
+        let bus = Bus::new(
+            ppu,
+            rom.prg_rom,
+            rom.mapper,
+            rom.prg_ram_size,
+            rom.has_battery,
+        );
         let cpu = Cpu::new();
-        Self { 
-            cpu, 
+        Self {
+            cpu,
             bus,
             audio_samples: Vec::with_capacity(4096),
             audio_sample_rate: 44100.0,
@@ -76,6 +89,14 @@ impl Nes {
     pub fn set_joypad_button(&mut self, button: crate::joypad::JoypadButton, status: bool) {
         self.bus.joypad1.set_button_status(button, status);
     }
+
+    pub fn load_battery_ram(&mut self, data: &[u8]) {
+        self.bus.load_battery_ram(data);
+    }
+
+    pub fn battery_ram_data(&self) -> Option<Vec<u8>> {
+        self.bus.battery_ram_data().map(|ram| ram.to_vec())
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
@@ -88,14 +109,13 @@ impl Nes {
             0x02, // 2x 16KB PRG ROM
             0x01, // 1x 8KB CHR ROM
             0x00, // Mapper 0
-            0x00, 
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
         let mut full_rom = Vec::new();
         full_rom.extend(header);
         full_rom.extend(dummy_rom);
         full_rom.extend(vec![0; 0x2000]); // CHR ROM
-        
+
         Self::new_with_rom(&full_rom)
     }
 
@@ -105,9 +125,10 @@ impl Nes {
             self.bus.ppu.chr_rom = rom.chr_rom;
             self.bus.ppu.mirroring = rom.screen_mirroring;
             self.bus.mapper = rom.mapper;
-            self.bus.prg_bank = 0;
             self.bus.ppu.mapper = rom.mapper;
-            self.bus.ppu.chr_bank = 0;
+            self.bus.prg_ram = vec![0; rom.prg_ram_size.max(0x2000)];
+            self.bus.has_battery = rom.has_battery;
+            self.bus.reset_mapper_state();
             self.reset();
         }
     }
@@ -117,13 +138,20 @@ impl Nes {
     }
 
     pub fn tick(&mut self) -> usize {
+        self.bus.ppu_cycles_advanced = 0;
         let cycles = self.cpu.step(&mut self.bus);
-        
-        let ppu_cycles = cycles * 3;
-        let nmi = self.bus.ppu.tick(ppu_cycles as u16);
+
+        // PPU catch-up: the PPU was partially advanced during bus.read()/write() calls.
+        // Advance the remaining PPU cycles for this instruction.
+        let total_ppu_cycles = (cycles as u16) * 3;
+        let remaining = total_ppu_cycles.saturating_sub(self.bus.ppu_cycles_advanced);
+        self.bus.ppu.tick(remaining);
+
         self.bus.tick_apu(cycles as u16);
-        
-        if nmi || self.bus.ppu.nmi_interrupt {
+
+        // NMI is checked via the persistent nmi_interrupt flag, which is set
+        // by tick() during both catch-up (bus.read/write) and remaining cycles.
+        if self.bus.ppu.nmi_interrupt {
             self.cpu.nmi(&mut self.bus);
             self.bus.ppu.nmi_interrupt = false;
         }
@@ -139,22 +167,28 @@ impl Nes {
         self.apu_sum += current_output * step_cycles as f32;
         self.apu_count += step_cycles;
 
-        self.audio_samples_needed += step_cycles as f64 * (self.audio_sample_rate as f64 / 1789773.0);
+        self.audio_samples_needed +=
+            step_cycles as f64 * (self.audio_sample_rate as f64 / 1789773.0);
         if self.audio_samples_needed >= 1.0 {
             let num_samples = self.audio_samples_needed as i32;
             for _ in 0..num_samples {
-                let avg_sample = if self.apu_count > 0 { self.apu_sum / self.apu_count as f32 } else { current_output };
-                
+                let avg_sample = if self.apu_count > 0 {
+                    self.apu_sum / self.apu_count as f32
+                } else {
+                    current_output
+                };
+
                 // DC Blocker (High-pass filter at ~20Hz)
-                self.filtered_sample = avg_sample - self.prev_apu_sample + 0.999 * self.filtered_sample;
+                self.filtered_sample =
+                    avg_sample - self.prev_apu_sample + 0.999 * self.filtered_sample;
                 self.prev_apu_sample = avg_sample;
-                
+
                 // Cap buffer size to avoid memory leaks if JS doesn't consume
                 if self.audio_samples.len() < 8192 {
                     self.audio_samples.push(self.filtered_sample);
                 }
             }
-            
+
             if num_samples > 0 {
                 self.apu_sum = 0.0;
                 self.apu_count = 0;
