@@ -27,6 +27,10 @@ pub struct Ppu {
     pub mirroring: Mirroring,
     pub chr_rom: Vec<u8>,
     pub chr_ram: [u8; 8192],
+    pub mapper: u8,
+    pub chr_bank: usize,
+    
+    pub nmi_interrupt: bool,
     
     pub scanline: u16,
     pub cycle: u16,
@@ -90,6 +94,9 @@ impl Ppu {
             mirroring,
             chr_rom,
             chr_ram: [0; 8192],
+            mapper: 0,
+            chr_bank: 0,
+            nmi_interrupt: false,
             scanline: 0,
             cycle: 0,
             bg_next_tile_id: 0,
@@ -246,6 +253,16 @@ impl Ppu {
         }
     }
 
+    /// Non-side-effecting register read for trace/debug.
+    pub fn peek_register(&self, addr: u16) -> u8 {
+        match addr {
+            0x2002 => self.status, // Return status without clearing VBlank
+            0x2004 => self.oam[self.oam_addr as usize],
+            0x2007 => self.buffered_data, // Return buffered data without advancing address
+            _ => 0,
+        }
+    }
+
     pub fn write_register(&mut self, addr: u16, data: u8) {
         self.io_databus = data;
         match addr {
@@ -262,7 +279,15 @@ impl Ppu {
 
     // $2000 PPUCTRL
     fn write_ctrl(&mut self, data: u8) {
+        let nmi_previously_enabled = (self.ctrl & 0x80) != 0;
         self.ctrl = data;
+        let nmi_enabled = (self.ctrl & 0x80) != 0;
+        let vblank_active = (self.status & 0x80) != 0;
+        
+        if !nmi_previously_enabled && nmi_enabled && vblank_active {
+            self.nmi_interrupt = true;
+        }
+
         // Update t: base nametable select (bits 0-1)
         // t: ...GH.. ........ <- d: ......GH
         self.t = (self.t & 0xF3FF) | (((data & 0x03) as u16) << 10);
@@ -278,9 +303,6 @@ impl Ppu {
         let status = self.status;
         // W latch is cleared on status read
         self.w = false;
-        // Open bus behavior for lower 5 bits (not fully implemented here, using status)
-        // Actually top 3 bits are reliable, bottom 5 are usually open bus (often last written value)
-        // For simplicity, return constructed status
         
         // VBlank flag is cleared reading PPUSTATUS
         self.status &= !0x80;
@@ -374,11 +396,16 @@ impl Ppu {
         match addr {
             0x0000..=0x1FFF => {
                 // Read from CHR ROM/RAM
-                // If CHR ROM is present, read from it.
-                // If CHR RAM (no CHR ROM), use vram? No, need dedicated CHR RAM.
-                // For now, assume CHR ROM is correct or CHR RAM if empty.
                 if self.chr_rom.len() > 0 {
-                     self.chr_rom[addr as usize % self.chr_rom.len()]
+                    if self.mapper == 3 {
+                        let bank_size = 8192; // 8KB
+                        let num_banks = self.chr_rom.len() / bank_size;
+                        let target_bank = if num_banks > 0 { self.chr_bank % num_banks } else { 0 };
+                        let offset = (target_bank * bank_size) + addr as usize;
+                        self.chr_rom[offset]
+                    } else {
+                        self.chr_rom[addr as usize % self.chr_rom.len()]
+                    }
                 } else {
                     self.chr_ram[addr as usize]
                 }

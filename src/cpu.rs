@@ -33,7 +33,7 @@ impl Cpu {
     }
 
     pub fn trace(&mut self, bus: &mut Bus) -> String {
-        let opcode = bus.read(self.pc);
+        let opcode = bus.peek(self.pc);
         let ops = match crate::opcodes::OPCODES_MAP.get(&opcode) {
             Some(op) => op,
             None => panic!("OpCode {:02X} is not implemented in opcodes.rs", opcode),
@@ -46,7 +46,7 @@ impl Cpu {
             AddressingMode::Immediate | AddressingMode::NoneAddressing => (0, 0),
             _ => {
                 let addr = self.get_absolute_address(bus, &ops.mode, self.pc + 1);
-                (addr, bus.read(addr))
+                (addr, bus.peek(addr))
             }
         };
 
@@ -56,7 +56,7 @@ impl Cpu {
                  _ => "".to_string(),
              },
              2 => {
-                 let address = bus.read(self.pc + 1);
+                 let address = bus.peek(self.pc + 1);
                  hex_dump.push(address);
                  match ops.mode {
                      AddressingMode::Immediate => format!("#${:02X}", address),
@@ -69,8 +69,8 @@ impl Cpu {
                  }
              },
              3 => {
-                 let address_lo = bus.read(self.pc + 1);
-                 let address_hi = bus.read(self.pc + 2);
+                 let address_lo = bus.peek(self.pc + 1);
+                 let address_hi = bus.peek(self.pc + 2);
                  hex_dump.push(address_lo);
                  hex_dump.push(address_hi);
                  
@@ -916,14 +916,27 @@ impl Cpu {
         self.push(bus, (self.pc >> 8) as u8);
         self.push(bus, (self.pc & 0xFF) as u8);
         self.push(bus, self.st & !0x10 | 0x20); // Break flag clear, bit 5 set
-        self.st |= 0x04; // Set Interrupt Disable (though NMI is non-maskable, it usually sets I flag to prevent IRQ?)
-        // NMI doesn't strictly need to set I flag on 6502, but often does? 
-        // Actually NMI ignores I flag. But inside NMI handler, we might want to block IRQ.
-        // 6502 behavior: NMI pushes P, then sets I flag.
+        self.st |= 0x04; // Set Interrupt Disable
         
         // Load vector from 0xFFFA
         let lo = bus.read(0xFFFA) as u16;
         let hi = bus.read(0xFFFB) as u16;
+        self.pc = lo | (hi << 8);
+    }
+
+    pub fn irq(&mut self, bus: &mut Bus) {
+        // IRQ is maskable: only fires when I flag is clear
+        if (self.st & 0x04) != 0 {
+            return;
+        }
+        self.push(bus, (self.pc >> 8) as u8);
+        self.push(bus, (self.pc & 0xFF) as u8);
+        self.push(bus, self.st & !0x10 | 0x20); // Break flag clear, bit 5 set
+        self.st |= 0x04; // Set Interrupt Disable
+        
+        // Load vector from 0xFFFE (same as BRK)
+        let lo = bus.read(0xFFFE) as u16;
+        let hi = bus.read(0xFFFF) as u16;
         self.pc = lo | (hi << 8);
     }
 
@@ -1386,7 +1399,7 @@ mod tests {
     fn create_bus() -> Bus {
         let ppu = Ppu::new(Mirroring::Horizontal, vec![0; 2048]);
         let rom = vec![0; 0x8000]; // Dummy 32KB ROM
-        Bus::new(ppu, rom)
+        Bus::new(ppu, rom, 0)
     }
 
     #[test]

@@ -111,7 +111,6 @@ fn main() -> Result<()> {
     if tracing {
         // Run in headless mode for tracing
         nes.reset();
-        nes.cpu.pc = 0xC000; // nestest automation start
         
         loop {
             println!("{}", nes.cpu.trace(&mut nes.bus));

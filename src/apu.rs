@@ -365,7 +365,10 @@ impl Apu {
     }
 
     pub fn output(&self) -> f32 {
-        let p1_mute = self.pulse1_timer_period < 8 || self.pulse1_target_period() > 0x7FF;
+        // Sweep mute: period < 8 always mutes; target > $7FF only mutes when NOT negating
+        // (negate mode subtracts, so overflow into bit 11 cannot occur)
+        let p1_mute = self.pulse1_timer_period < 8 
+            || (!self.pulse1_sweep_negate && self.pulse1_target_period() > 0x7FF);
         let p1 = if self.pulse1_length_counter > 0 && !p1_mute {
             let duty_table = [
                 [0, 1, 0, 0, 0, 0, 0, 0],
@@ -382,7 +385,8 @@ impl Apu {
             0
         };
 
-        let p2_mute = self.pulse2_timer_period < 8 || self.pulse2_target_period() > 0x7FF;
+        let p2_mute = self.pulse2_timer_period < 8 
+            || (!self.pulse2_sweep_negate && self.pulse2_target_period() > 0x7FF);
         let p2 = if self.pulse2_length_counter > 0 && !p2_mute {
             let duty_table = [
                 [0, 1, 0, 0, 0, 0, 0, 0],
@@ -508,9 +512,6 @@ impl Apu {
                         self.clock_envelopes();
                         self.clock_length_counters();
                         self.clock_sweeps();
-                        if !self.irq_inhibit {
-                            self.irq_pending = true;
-                        }
                         self.frame_counter_cycle = 0;
                     }
                     _ => {}
@@ -651,16 +652,17 @@ impl Apu {
     }
 
     fn clock_length_counters(&mut self) {
-        if self.pulse1_length_counter > 0 {
+        // Length counter halt flag = envelope_loop for pulse/noise, linear_control for triangle
+        if self.pulse1_length_counter > 0 && !self.pulse1_envelope_loop {
             self.pulse1_length_counter -= 1;
         }
-        if self.pulse2_length_counter > 0 {
+        if self.pulse2_length_counter > 0 && !self.pulse2_envelope_loop {
             self.pulse2_length_counter -= 1;
         }
-        if self.triangle_length_counter > 0 {
+        if self.triangle_length_counter > 0 && !self.triangle_linear_control {
             self.triangle_length_counter -= 1;
         }
-        if self.noise_length_counter > 0 {
+        if self.noise_length_counter > 0 && !self.noise_envelope_loop {
             self.noise_length_counter -= 1;
         }
     }
@@ -714,5 +716,9 @@ impl Apu {
                 self.dmc_irq_pending = true;
             }
         }
+    }
+
+    pub fn is_irq_pending(&self) -> bool {
+        self.irq_pending || self.dmc_irq_pending
     }
 }

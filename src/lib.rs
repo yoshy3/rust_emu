@@ -56,8 +56,9 @@ pub struct Nes {
 impl Nes {
     pub fn new_with_rom(rom_data: &[u8]) -> Self {
         let rom = crate::cartridge::Rom::new(&rom_data.to_vec()).unwrap();
-        let ppu = Ppu::new(rom.screen_mirroring, rom.chr_rom);
-        let bus = Bus::new(ppu, rom.prg_rom);
+        let mut ppu = Ppu::new(rom.screen_mirroring, rom.chr_rom);
+        ppu.mapper = rom.mapper;
+        let bus = Bus::new(ppu, rom.prg_rom, rom.mapper);
         let cpu = Cpu::new();
         Self { 
             cpu, 
@@ -103,6 +104,10 @@ impl Nes {
             self.bus.prg_rom = rom.prg_rom;
             self.bus.ppu.chr_rom = rom.chr_rom;
             self.bus.ppu.mirroring = rom.screen_mirroring;
+            self.bus.mapper = rom.mapper;
+            self.bus.prg_bank = 0;
+            self.bus.ppu.mapper = rom.mapper;
+            self.bus.ppu.chr_bank = 0;
             self.reset();
         }
     }
@@ -118,8 +123,14 @@ impl Nes {
         let nmi = self.bus.ppu.tick(ppu_cycles as u16);
         self.bus.tick_apu(cycles as u16);
         
-        if nmi {
+        if nmi || self.bus.ppu.nmi_interrupt {
             self.cpu.nmi(&mut self.bus);
+            self.bus.ppu.nmi_interrupt = false;
+        }
+
+        // Handle IRQ from APU (frame counter IRQ / DMC IRQ)
+        if self.bus.apu.is_irq_pending() {
+            self.cpu.irq(&mut self.bus);
         }
 
         // Audio logic
