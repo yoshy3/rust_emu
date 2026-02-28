@@ -40,6 +40,21 @@ impl Bus {
         }
     }
 
+    /// Non-side-effecting read for trace/debug. Does not clear VBlank,
+    /// advance joypad state, or affect APU status.
+    pub fn peek(&self, addr: u16) -> u8 {
+        match addr {
+            0x0000..=0x1FFF => self.cpu_vram[(addr as usize) & 0x7FF],
+            0x2000..=0x3FFF => self.ppu.peek_register(addr & 0x2007),
+            0x4014 => 0,
+            0x4015 => 0, // Don't clear APU status flags
+            0x4016 => 0, // Don't advance joypad shift register
+            0x4017 => 0,
+            0x8000..=0xFFFF => self.read_prg_rom(addr),
+            _ => 0,
+        }
+    }
+
     pub fn write(&mut self, addr: u16, data: u8) {
         match addr {
             0x0000..=0x1FFF => self.cpu_vram[(addr as usize) & 0x7FF] = data,
@@ -56,6 +71,8 @@ impl Bus {
             0x8000..=0xFFFF => {
                  if self.mapper == 2 {
                      self.prg_bank = data as usize;
+                 } else if self.mapper == 3 {
+                     self.ppu.chr_bank = data as usize;
                  }
             }
             _ => {}, 
@@ -109,7 +126,7 @@ impl Bus {
             } else {
                 // $C000-$FFFF: Fixed to the last bank
                 let last_bank = (self.prg_rom.len() / bank_size) - 1;
-                let offset = (last_bank * bank_size) + (addr as usize - bank_size);
+                let offset = (last_bank * bank_size) + (addr as usize - 0x4000);
                 self.prg_rom[offset]
             }
         } else {
@@ -163,5 +180,52 @@ mod tests {
         bus.write(0xFFFF, 2);
         assert_eq!(bus.read(0x8000), 2);
         assert_eq!(bus.read(0xBFFF), 2);
+    }
+
+    fn create_test_bus_mapper_3() -> Bus {
+        let mut chr_rom = Vec::with_capacity(32 * 1024);
+        for bank in 0..4u8 {
+            chr_rom.extend(vec![bank; 8192]);
+        }
+        let mut ppu = Ppu::new(Mirroring::Horizontal, chr_rom);
+        ppu.mapper = 3;
+        
+        let prg_rom = vec![0; 0x8000]; // 32KB PRG ROM
+        Bus::new(ppu, prg_rom, 3)
+    }
+
+    #[test]
+    fn test_mapper_3_chr_bank_switching() {
+        let mut bus = create_test_bus_mapper_3();
+        
+        // Initial state, CHR bank 0 is mapped
+        assert_eq!(bus.ppu.read_register(0x2002), 0); // Need to test via ppu.read_vram directly, but we can't easily without PPU address latch setup
+        
+        // We'll read VRAM directly for testing purposes, assuming read_vram is pub or visible
+        // However read_vram is private, so we test by interacting through `Ppu` public state
+        // Let's modify Ppu to make `read_vram` testable or just use a helper method/struct
+        
+        // Since `read_vram` is private, we will update `ppu::read_vram` call internally by doing a PPUDATA read.
+        
+        // Setup PPUADDR to 0x0000
+        bus.ppu.write_register(0x2006, 0x00);
+        bus.ppu.write_register(0x2006, 0x00);
+        
+        // Read PPUDATA (first read is buffered)
+        bus.ppu.read_register(0x2007); 
+        let val1 = bus.ppu.read_register(0x2007); // Now reads from 0x0001 (which was buffered from 0x0000)
+        assert_eq!(val1, 0); // Bank 0 data
+        
+        // Switch to CHR Bank 2
+        bus.write(0x8000, 2);
+        
+        // Reset PPUADDR to 0x0000
+        bus.ppu.write_register(0x2006, 0x00);
+        bus.ppu.write_register(0x2006, 0x00);
+        
+        // Read PPUDATA
+        bus.ppu.read_register(0x2007); // buff
+        let val2 = bus.ppu.read_register(0x2007); 
+        assert_eq!(val2, 2); // Bank 2 data
     }
 }

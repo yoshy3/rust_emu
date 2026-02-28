@@ -33,7 +33,7 @@ impl Cpu {
     }
 
     pub fn trace(&mut self, bus: &mut Bus) -> String {
-        let opcode = bus.read(self.pc);
+        let opcode = bus.peek(self.pc);
         let ops = match crate::opcodes::OPCODES_MAP.get(&opcode) {
             Some(op) => op,
             None => panic!("OpCode {:02X} is not implemented in opcodes.rs", opcode),
@@ -46,7 +46,7 @@ impl Cpu {
             AddressingMode::Immediate | AddressingMode::NoneAddressing => (0, 0),
             _ => {
                 let addr = self.get_absolute_address(bus, &ops.mode, self.pc + 1);
-                (addr, bus.read(addr))
+                (addr, bus.peek(addr))
             }
         };
 
@@ -56,7 +56,7 @@ impl Cpu {
                  _ => "".to_string(),
              },
              2 => {
-                 let address = bus.read(self.pc + 1);
+                 let address = bus.peek(self.pc + 1);
                  hex_dump.push(address);
                  match ops.mode {
                      AddressingMode::Immediate => format!("#${:02X}", address),
@@ -69,8 +69,8 @@ impl Cpu {
                  }
              },
              3 => {
-                 let address_lo = bus.read(self.pc + 1);
-                 let address_hi = bus.read(self.pc + 2);
+                 let address_lo = bus.peek(self.pc + 1);
+                 let address_hi = bus.peek(self.pc + 2);
                  hex_dump.push(address_lo);
                  hex_dump.push(address_hi);
                  

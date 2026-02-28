@@ -40,7 +40,8 @@ impl Rom {
             (false, false) => Mirroring::Horizontal,
         };
 
-        let prg_rom_start = 16;
+        let has_trainer = (flags_6 & 0b0100) != 0;
+        let prg_rom_start = 16 + if has_trainer { 512 } else { 0 };
         let prg_rom_end = prg_rom_start + prg_rom_size;
         let chr_rom_start = prg_rom_end;
         let chr_rom_end = chr_rom_start + chr_rom_size;
