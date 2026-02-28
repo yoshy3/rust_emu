@@ -57,7 +57,7 @@ impl Nes {
     pub fn new_with_rom(rom_data: &[u8]) -> Self {
         let rom = crate::cartridge::Rom::new(&rom_data.to_vec()).unwrap();
         let ppu = Ppu::new(rom.screen_mirroring, rom.chr_rom);
-        let bus = Bus::new(ppu, rom.prg_rom);
+        let bus = Bus::new(ppu, rom.prg_rom, rom.mapper);
         let cpu = Cpu::new();
         Self { 
             cpu, 
@@ -103,6 +103,8 @@ impl Nes {
             self.bus.prg_rom = rom.prg_rom;
             self.bus.ppu.chr_rom = rom.chr_rom;
             self.bus.ppu.mirroring = rom.screen_mirroring;
+            self.bus.mapper = rom.mapper;
+            self.bus.prg_bank = 0;
             self.reset();
         }
     }

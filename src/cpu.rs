@@ -1386,7 +1386,7 @@ mod tests {
     fn create_bus() -> Bus {
         let ppu = Ppu::new(Mirroring::Horizontal, vec![0; 2048]);
         let rom = vec![0; 0x8000]; // Dummy 32KB ROM
-        Bus::new(ppu, rom)
+        Bus::new(ppu, rom, 0)
     }
 
     #[test]

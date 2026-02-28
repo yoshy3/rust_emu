@@ -9,10 +9,12 @@ pub struct Bus {
     pub cycles: usize, // Accumulated cycles (e.g. from DMA)
     pub joypad1: Joypad,
     pub apu: Apu,
+    pub mapper: u8,
+    pub prg_bank: usize,
 }
 
 impl Bus {
-    pub fn new(ppu: Ppu, rom: Vec<u8>) -> Self {
+    pub fn new(ppu: Ppu, rom: Vec<u8>, mapper: u8) -> Self {
         Self {
             cpu_vram: [0; 2048],
             prg_rom: rom,
@@ -20,6 +22,8 @@ impl Bus {
             cycles: 0,
             joypad1: Joypad::new(),
             apu: Apu::new(),
+            mapper,
+            prg_bank: 0,
         }
     }
 
@@ -50,7 +54,9 @@ impl Bus {
                 self.apu.write_register(addr, data);
             }
             0x8000..=0xFFFF => {
-                 // ROM is read-only (usually), unless mapper bank switching
+                 if self.mapper == 2 {
+                     self.prg_bank = data as usize;
+                 }
             }
             _ => {}, 
         }
@@ -91,10 +97,71 @@ impl Bus {
 
     fn read_prg_rom(&self, addr: u16) -> u8 {
         let mut addr = addr - 0x8000;
-        // Mirror if PRG ROM is 16KB (NROM-128)
-        if self.prg_rom.len() == 0x4000 && addr >= 0x4000 {
-            addr = addr % 0x4000;
+        
+        if self.mapper == 2 {
+            let bank_size = 0x4000; // 16KB
+            
+            if addr < bank_size as u16 {
+                // $8000-$BFFF: Switchable bank
+                let target_bank = self.prg_bank % (self.prg_rom.len() / bank_size);
+                let offset = (target_bank * bank_size) + addr as usize;
+                self.prg_rom[offset]
+            } else {
+                // $C000-$FFFF: Fixed to the last bank
+                let last_bank = (self.prg_rom.len() / bank_size) - 1;
+                let offset = (last_bank * bank_size) + (addr as usize - bank_size);
+                self.prg_rom[offset]
+            }
+        } else {
+            // Default Mapper 0 behavior
+            // Mirror if PRG ROM is 16KB (NROM-128)
+            if self.prg_rom.len() == 0x4000 && addr >= 0x4000 {
+                addr = addr % 0x4000;
+            }
+            self.prg_rom[addr as usize]
         }
-        self.prg_rom[addr as usize]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ppu::Ppu;
+    use crate::cartridge::Mirroring;
+
+    fn create_test_bus_mapper_2() -> Bus {
+        let ppu = Ppu::new(Mirroring::Horizontal, vec![0; 2048]);
+        let mut prg_rom = Vec::with_capacity(64 * 1024);
+        for bank in 0..4u8 {
+            prg_rom.extend(vec![bank; 16384]);
+        }
+        Bus::new(ppu, prg_rom, 2)
+    }
+
+    #[test]
+    fn test_mapper_2_bank_switching() {
+        let mut bus = create_test_bus_mapper_2();
+        
+        // Initial state, bank 0 is at 0x8000
+        assert_eq!(bus.read(0x8000), 0);
+        assert_eq!(bus.read(0xBFFF), 0);
+        
+        // Fixed bank is always the last bank (Bank 3) at 0xC000
+        assert_eq!(bus.read(0xC000), 3);
+        assert_eq!(bus.read(0xFFFF), 3);
+        
+        // Switch to Bank 1
+        bus.write(0x8000, 1);
+        assert_eq!(bus.read(0x8000), 1);
+        assert_eq!(bus.read(0xBFFF), 1);
+        
+        // Fixed bank is untouched
+        assert_eq!(bus.read(0xC000), 3);
+        assert_eq!(bus.read(0xFFFF), 3);
+        
+        // Switch to Bank 2
+        bus.write(0xFFFF, 2);
+        assert_eq!(bus.read(0x8000), 2);
+        assert_eq!(bus.read(0xBFFF), 2);
     }
 }
