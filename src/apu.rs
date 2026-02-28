@@ -1,11 +1,11 @@
 const LENGTH_TABLE: [u8; 32] = [
-    10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14,
-    12, 16, 24, 18, 48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30,
+    10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14, 12, 16, 24, 18, 48, 20, 96, 22,
+    192, 24, 72, 26, 16, 28, 32, 30,
 ];
 
 const TRIANGLE_TABLE: [u8; 32] = [
-    15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    13, 14, 15,
 ];
 
 const DMC_PERIOD_TABLE: [u16; 16] = [
@@ -184,7 +184,7 @@ impl Apu {
 
             frame_counter_mode: 0,
             frame_counter_cycle: 0,
-            irq_inhibit: false,
+            irq_inhibit: true,
             irq_pending: false,
         }
     }
@@ -212,7 +212,8 @@ impl Apu {
             }
             0x4003 => {
                 // Pulse 1: Length counter load, timer high
-                self.pulse1_timer_period = (self.pulse1_timer_period & 0x00FF) | (((data & 0x07) as u16) << 8);
+                self.pulse1_timer_period =
+                    (self.pulse1_timer_period & 0x00FF) | (((data & 0x07) as u16) << 8);
                 if self.pulse1_enabled {
                     self.pulse1_length_counter = LENGTH_TABLE[(data >> 3) as usize];
                 }
@@ -240,7 +241,8 @@ impl Apu {
             }
             0x4007 => {
                 // Pulse 2: Length counter load, timer high
-                self.pulse2_timer_period = (self.pulse2_timer_period & 0x00FF) | (((data & 0x07) as u16) << 8);
+                self.pulse2_timer_period =
+                    (self.pulse2_timer_period & 0x00FF) | (((data & 0x07) as u16) << 8);
                 if self.pulse2_enabled {
                     self.pulse2_length_counter = LENGTH_TABLE[(data >> 3) as usize];
                 }
@@ -258,7 +260,8 @@ impl Apu {
             }
             0x400B => {
                 // Triangle: Length counter load, timer high
-                self.triangle_timer_period = (self.triangle_timer_period & 0x00FF) | (((data & 0x07) as u16) << 8);
+                self.triangle_timer_period =
+                    (self.triangle_timer_period & 0x00FF) | (((data & 0x07) as u16) << 8);
                 if self.triangle_enabled {
                     self.triangle_length_counter = LENGTH_TABLE[(data >> 3) as usize];
                 }
@@ -273,7 +276,9 @@ impl Apu {
             0x400E => {
                 // Noise: Period, Mode
                 self.noise_mode = (data & 0x80) != 0;
-                let noise_table = [4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2032, 4064];
+                let noise_table = [
+                    4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2032, 4064,
+                ];
                 self.noise_timer_period = noise_table[(data & 0x0F) as usize];
             }
             0x400F => {
@@ -318,7 +323,7 @@ impl Apu {
                 if !self.noise_enabled {
                     self.noise_length_counter = 0;
                 }
-                
+
                 self.dmc_enabled = (data & 0x10) != 0;
                 if !self.dmc_enabled {
                     self.dmc_current_length = 0;
@@ -335,7 +340,7 @@ impl Apu {
                 if self.irq_inhibit {
                     self.irq_pending = false;
                 }
-                
+
                 self.frame_counter_cycle = 0;
                 // If 5-step mode, clock immediately
                 if self.frame_counter_mode == 1 {
@@ -349,15 +354,29 @@ impl Apu {
 
     pub fn read_status(&mut self) -> u8 {
         let mut status = 0;
-        if self.pulse1_length_counter > 0 { status |= 0x01; }
-        if self.pulse2_length_counter > 0 { status |= 0x02; }
-        if self.triangle_length_counter > 0 { status |= 0x04; }
-        if self.noise_length_counter > 0 { status |= 0x08; }
-        if self.dmc_current_length > 0 { status |= 0x10; }
-        
-        if self.irq_pending { status |= 0x40; }
-        if self.dmc_irq_pending { status |= 0x80; }
-        
+        if self.pulse1_length_counter > 0 {
+            status |= 0x01;
+        }
+        if self.pulse2_length_counter > 0 {
+            status |= 0x02;
+        }
+        if self.triangle_length_counter > 0 {
+            status |= 0x04;
+        }
+        if self.noise_length_counter > 0 {
+            status |= 0x08;
+        }
+        if self.dmc_current_length > 0 {
+            status |= 0x10;
+        }
+
+        if self.irq_pending {
+            status |= 0x40;
+        }
+        if self.dmc_irq_pending {
+            status |= 0x80;
+        }
+
         // Reading status clears frame IRQ flag, but NOT dmc irq flag?
         // Actually, reading $4015 clears the frame interrupt flag.
         self.irq_pending = false;
@@ -367,7 +386,7 @@ impl Apu {
     pub fn output(&self) -> f32 {
         // Sweep mute: period < 8 always mutes; target > $7FF only mutes when NOT negating
         // (negate mode subtracts, so overflow into bit 11 cannot occur)
-        let p1_mute = self.pulse1_timer_period < 8 
+        let p1_mute = self.pulse1_timer_period < 8
             || (!self.pulse1_sweep_negate && self.pulse1_target_period() > 0x7FF);
         let p1 = if self.pulse1_length_counter > 0 && !p1_mute {
             let duty_table = [
@@ -377,7 +396,11 @@ impl Apu {
                 [1, 0, 0, 1, 1, 1, 1, 1],
             ];
             if duty_table[self.pulse1_duty as usize][self.pulse1_duty_pos as usize] == 1 {
-                if self.pulse1_constant_volume { self.pulse1_volume } else { self.pulse1_env_decay }
+                if self.pulse1_constant_volume {
+                    self.pulse1_volume
+                } else {
+                    self.pulse1_env_decay
+                }
             } else {
                 0
             }
@@ -385,7 +408,7 @@ impl Apu {
             0
         };
 
-        let p2_mute = self.pulse2_timer_period < 8 
+        let p2_mute = self.pulse2_timer_period < 8
             || (!self.pulse2_sweep_negate && self.pulse2_target_period() > 0x7FF);
         let p2 = if self.pulse2_length_counter > 0 && !p2_mute {
             let duty_table = [
@@ -395,7 +418,11 @@ impl Apu {
                 [1, 0, 0, 1, 1, 1, 1, 1],
             ];
             if duty_table[self.pulse2_duty as usize][self.pulse2_duty_pos as usize] == 1 {
-                if self.pulse2_constant_volume { self.pulse2_volume } else { self.pulse2_env_decay }
+                if self.pulse2_constant_volume {
+                    self.pulse2_volume
+                } else {
+                    self.pulse2_env_decay
+                }
             } else {
                 0
             }
@@ -418,13 +445,17 @@ impl Apu {
 
         // Noise
         let n = if self.noise_length_counter > 0 && (self.noise_shift_register & 1) == 0 {
-            if self.noise_constant_volume { self.noise_volume as f32 } else { self.noise_env_decay as f32 }
+            if self.noise_constant_volume {
+                self.noise_volume as f32
+            } else {
+                self.noise_env_decay as f32
+            }
         } else {
             0.0
         };
 
         let d = self.dmc_output_level as f32;
-        
+
         let tnd_out = if t + n + d > 0.0 {
             159.79 / (1.0 / (t / 8227.0 + n / 12241.0 + d / 22638.0) + 100.0)
         } else {
@@ -439,7 +470,7 @@ impl Apu {
             // Pulse and Noise timers decrement every 2 CPU cycles
             // For simplicity, we can use a cycle counter or just keep track in Apu.
             // Let's add a pulse_timer_phase or similar.
-            
+
             // Triangle timer decrements every CPU cycle
             if self.triangle_timer > 0 {
                 self.triangle_timer -= 1;
@@ -470,7 +501,7 @@ impl Apu {
                     self.noise_timer -= 1;
                 } else {
                     self.noise_timer = self.noise_timer_period;
-                    
+
                     let bit0 = self.noise_shift_register & 1;
                     let bit_n = if self.noise_mode {
                         (self.noise_shift_register >> 6) & 1
@@ -609,7 +640,11 @@ impl Apu {
         // Pulse 1 Sweep
         let p1_target = self.pulse1_target_period();
         let p1_mute = self.pulse1_timer_period < 8 || p1_target > 0x7FF;
-        if self.pulse1_sweep_divider == 0 && self.pulse1_sweep_enabled && !p1_mute && self.pulse1_sweep_shift > 0 {
+        if self.pulse1_sweep_divider == 0
+            && self.pulse1_sweep_enabled
+            && !p1_mute
+            && self.pulse1_sweep_shift > 0
+        {
             self.pulse1_timer_period = p1_target;
         }
         if self.pulse1_sweep_divider == 0 || self.pulse1_sweep_reload {
@@ -622,7 +657,11 @@ impl Apu {
         // Pulse 2 Sweep
         let p2_target = self.pulse2_target_period();
         let p2_mute = self.pulse2_timer_period < 8 || p2_target > 0x7FF;
-        if self.pulse2_sweep_divider == 0 && self.pulse2_sweep_enabled && !p2_mute && self.pulse2_sweep_shift > 0 {
+        if self.pulse2_sweep_divider == 0
+            && self.pulse2_sweep_enabled
+            && !p2_mute
+            && self.pulse2_sweep_shift > 0
+        {
             self.pulse2_timer_period = p2_target;
         }
         if self.pulse2_sweep_divider == 0 || self.pulse2_sweep_reload {

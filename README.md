@@ -16,6 +16,8 @@ A Nintendo Entertainment System (NES) emulator written in Rust, targeting generi
 - **Cross-Platform**: Runs natively on desktop and in modern web browsers.
 - **Rendering**: Uses `pixels` for hardware-accelerated 2D pixel buffer rendering.
 - **Web Support**: Built with `wasm-bindgen`.
+- **Mapper Support**: Mapper 0 (NROM), Mapper 1 (MMC1), Mapper 2 (UxROM), Mapper 3 (CNROM).
+- **Battery Save (Desktop)**: For battery-backed cartridges, PRG RAM is loaded/saved as `.sav` next to the ROM.
 
 ## Prerequisites
 - [Rust](https://www.rust-lang.org/tools/install)
@@ -30,6 +32,8 @@ Run the emulator natively:
 cargo run
 ```
 Use `Esc` to exit.
+
+When loading a ROM path (e.g. `cargo run -- path/to/game.nes`), battery-backed saves are persisted to `path/to/game.sav`.
 
 ### Web (WASM)
 1. Build the project for the web:

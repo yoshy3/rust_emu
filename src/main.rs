@@ -1,27 +1,34 @@
 use anyhow::{Error, Result};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use log::error;
-use std::time::{Instant, Duration};
 use pixels::{Pixels, SurfaceTexture};
+use rust_emu::joypad::JoypadButton;
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use winit::dpi::LogicalSize;
 use winit::event::{Event, VirtualKeyCode};
 use winit::event_loop::EventLoop;
 use winit::window::WindowBuilder;
 use winit_input_helper::WinitInputHelper;
-use rust_emu::joypad::JoypadButton;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::sync::{Arc, Mutex};
-use std::collections::VecDeque;
 
 const _SAMPLE_RATE: u32 = 44100;
 
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 240;
 
+fn write_save_if_needed(nes: &rust_emu::Nes, save_path: &Option<PathBuf>) {
+    if let (Some(path), Some(save_data)) = (save_path, nes.battery_ram_data()) {
+        let _ = std::fs::write(path, save_data);
+    }
+}
+
 fn main() -> Result<()> {
     env_logger::init();
     let event_loop = EventLoop::new();
     let mut input = WinitInputHelper::new();
-    
+
     let window = {
         let size = LogicalSize::new(WIDTH as f64 * 3.0, HEIGHT as f64 * 3.0);
         WindowBuilder::new()
@@ -40,8 +47,21 @@ fn main() -> Result<()> {
 
     // Load ROM
     let args: Vec<String> = std::env::args().collect();
-    let rom_data = if args.len() > 1 {
-        std::fs::read(&args[1]).map_err(Error::msg)?
+    let mut rom_path: Option<PathBuf> = None;
+    let mut tracing = false;
+    let mut mmc1_logging = false;
+    for arg in args.iter().skip(1) {
+        if arg == "--trace" {
+            tracing = true;
+        } else if arg == "--mmc1-log" {
+            mmc1_logging = true;
+        } else if !arg.starts_with("--") && rom_path.is_none() {
+            rom_path = Some(PathBuf::from(arg));
+        }
+    }
+
+    let rom_data = if let Some(path) = rom_path.as_ref() {
+        std::fs::read(path).map_err(Error::msg)?
     } else {
         // Dummy ROM for testing if no file provided
         let rom = vec![0; 0x8000];
@@ -51,8 +71,7 @@ fn main() -> Result<()> {
             0x02, // 2x 16KB PRG ROM
             0x01, // 1x 8KB CHR ROM
             0x00, // Mapper 0
-            0x00, 
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
         let mut full_rom = Vec::new();
         full_rom.extend(header);
@@ -61,12 +80,24 @@ fn main() -> Result<()> {
         full_rom
     };
 
+    let save_path = rom_path.as_ref().map(|path| path.with_extension("sav"));
+
     let mut nes = rust_emu::Nes::new_with_rom(&rom_data);
+    if mmc1_logging {
+        nes.bus.set_mmc1_debug(true);
+    }
+    if let Some(path) = save_path.as_ref() {
+        if let Ok(save_data) = std::fs::read(path) {
+            nes.load_battery_ram(&save_data);
+        }
+    }
     nes.reset();
 
     // Audio Setup
     let host = cpal::default_host();
-    let device = host.default_output_device().expect("No output device available");
+    let device = host
+        .default_output_device()
+        .expect("No output device available");
     let config = device.default_output_config().unwrap();
     let sample_rate = config.sample_rate().0;
 
@@ -74,32 +105,31 @@ fn main() -> Result<()> {
     let audio_buffer_out = Arc::clone(&audio_buffer);
     let num_channels = config.channels();
 
-    let stream = device.build_output_stream(
-        &config.into(),
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            let mut buffer = audio_buffer_out.lock().unwrap();
-            for frame in data.chunks_mut(num_channels as usize) {
-                if let Some(sample) = buffer.pop_front() {
-                    for channel in frame {
-                        *channel = sample;
-                    }
-                } else {
-                    for channel in frame {
-                        *channel = 0.0;
+    let stream = device
+        .build_output_stream(
+            &config.into(),
+            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                let mut buffer = audio_buffer_out.lock().unwrap();
+                for frame in data.chunks_mut(num_channels as usize) {
+                    if let Some(sample) = buffer.pop_front() {
+                        for channel in frame {
+                            *channel = sample;
+                        }
+                    } else {
+                        for channel in frame {
+                            *channel = 0.0;
+                        }
                     }
                 }
-            }
-        },
-        |err| error!("Audio stream error: {}", err),
-        None
-    ).unwrap();
+            },
+            |err| error!("Audio stream error: {}", err),
+            None,
+        )
+        .unwrap();
     stream.play().unwrap();
 
     let mut audio_samples_needed = 0.0;
     let samples_per_cpu_cycle = sample_rate as f64 / 1_789_773.0; // CPU clock rate
-
-    // Check for trace flag
-    let tracing = args.contains(&"--trace".to_string());
 
     let mut last_frame_time = Instant::now();
     let frame_duration = Duration::from_nanos(16639267); // NES NTSC ~60.098 Hz
@@ -111,13 +141,13 @@ fn main() -> Result<()> {
     if tracing {
         // Run in headless mode for tracing
         nes.reset();
-        
+
         loop {
             println!("{}", nes.cpu.trace(&mut nes.bus));
             nes.tick();
-            
+
             // Optional: Break on infinite loop or specific PC
-            // if nes.cpu.pc == 0xC66E { break; } 
+            // if nes.cpu.pc == 0xC66E { break; }
         }
     } else {
         event_loop.run(move |event, _, control_flow| {
@@ -127,29 +157,32 @@ fn main() -> Result<()> {
             if let Event::RedrawRequested(_) = event {
                 let frame = pixels.frame_mut();
                 nes.draw(frame);
-    
+
                 if let Err(err) = pixels.render() {
                     error!("pixels.render() failed: {}", err);
+                    write_save_if_needed(&nes, &save_path);
                     control_flow.set_exit();
                     return;
                 }
             }
-    
+
             // Handle input events
             if input.update(&event) {
                 if input.key_pressed(VirtualKeyCode::Escape) || input.close_requested() {
+                    write_save_if_needed(&nes, &save_path);
                     control_flow.set_exit();
                     return;
                 }
-    
+
                 if let Some(size) = input.window_resized() {
-                     if let Err(err) = pixels.resize_surface(size.width, size.height) {
+                    if let Err(err) = pixels.resize_surface(size.width, size.height) {
                         error!("pixels.resize_surface() failed: {}", err);
+                        write_save_if_needed(&nes, &save_path);
                         control_flow.set_exit();
                         return;
                     }
                 }
-    
+
                 nes.set_joypad_button(JoypadButton::BUTTON_A, input.key_held(VirtualKeyCode::Z));
                 nes.set_joypad_button(JoypadButton::BUTTON_B, input.key_held(VirtualKeyCode::X));
                 nes.set_joypad_button(JoypadButton::SELECT, input.key_held(VirtualKeyCode::RShift));
@@ -180,16 +213,21 @@ fn main() -> Result<()> {
                         let mut buffer = audio_buffer.lock().unwrap();
                         if buffer.len() < 4096 {
                             for _ in 0..audio_samples_needed as i32 {
-                                let avg_sample = if apu_count > 0 { apu_sum / apu_count as f32 } else { current_output };
-                                
+                                let avg_sample = if apu_count > 0 {
+                                    apu_sum / apu_count as f32
+                                } else {
+                                    current_output
+                                };
+
                                 // Reset accumulator
                                 apu_sum = 0.0;
                                 apu_count = 0;
 
                                 // DC Blocker (High-pass filter at ~20Hz)
-                                filtered_sample = avg_sample - prev_apu_sample + 0.999 * filtered_sample;
+                                filtered_sample =
+                                    avg_sample - prev_apu_sample + 0.999 * filtered_sample;
                                 prev_apu_sample = avg_sample;
-                                
+
                                 buffer.push_back(filtered_sample);
                             }
                         }
@@ -204,7 +242,6 @@ fn main() -> Result<()> {
                 window.request_redraw();
             }
         });
- // run diverges
+        // run diverges
     }
 }
-

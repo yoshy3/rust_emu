@@ -17,6 +17,8 @@ Rustで書かれた、デスクトップ（Windows/Mac/Linux）およびWebAssem
 - **レンダリング**: `pixels` ライブラリを使用したハードウェアアクセラレーションによる2D描画。
 - **オーディオ**: OversamplingとDCブロッカーを搭載したAPU実装（デスクトップ・Web両対応）。
 - **Web対応**: `wasm-bindgen` を使用したビルドと、720p相当へのスケーリング対応。
+- **Mapper対応**: Mapper 0 (NROM), Mapper 1 (MMC1), Mapper 2 (UxROM), Mapper 3 (CNROM)。
+- **バッテリセーブ（デスクトップ）**: バッテリバックアップ対応ROMでは、PRG RAMをROMと同じ場所の `.sav` ファイルに保存/復元します。
 
 ## 必要条件
 - [Rust](https://www.rust-lang.org/tools/install)
@@ -31,6 +33,8 @@ Rustで書かれた、デスクトップ（Windows/Mac/Linux）およびWebAssem
 cargo run -- /path/to/game.nes
 ```
 `Esc` キーで終了します。
+
+ROMを指定して起動した場合、バッテリバックアップ対応カートリッジは `/path/to/game.sav` にセーブデータを書き込みます。
 
 ### Web (WASM)
 1. Web向けにビルド：
