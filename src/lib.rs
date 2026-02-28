@@ -128,6 +128,11 @@ impl Nes {
             self.bus.ppu.nmi_interrupt = false;
         }
 
+        // Handle IRQ from APU (frame counter IRQ / DMC IRQ)
+        if self.bus.apu.is_irq_pending() {
+            self.cpu.irq(&mut self.bus);
+        }
+
         // Audio logic
         let step_cycles = cycles as u32;
         let current_output = self.bus.apu.output();

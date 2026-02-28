@@ -916,14 +916,27 @@ impl Cpu {
         self.push(bus, (self.pc >> 8) as u8);
         self.push(bus, (self.pc & 0xFF) as u8);
         self.push(bus, self.st & !0x10 | 0x20); // Break flag clear, bit 5 set
-        self.st |= 0x04; // Set Interrupt Disable (though NMI is non-maskable, it usually sets I flag to prevent IRQ?)
-        // NMI doesn't strictly need to set I flag on 6502, but often does? 
-        // Actually NMI ignores I flag. But inside NMI handler, we might want to block IRQ.
-        // 6502 behavior: NMI pushes P, then sets I flag.
+        self.st |= 0x04; // Set Interrupt Disable
         
         // Load vector from 0xFFFA
         let lo = bus.read(0xFFFA) as u16;
         let hi = bus.read(0xFFFB) as u16;
+        self.pc = lo | (hi << 8);
+    }
+
+    pub fn irq(&mut self, bus: &mut Bus) {
+        // IRQ is maskable: only fires when I flag is clear
+        if (self.st & 0x04) != 0 {
+            return;
+        }
+        self.push(bus, (self.pc >> 8) as u8);
+        self.push(bus, (self.pc & 0xFF) as u8);
+        self.push(bus, self.st & !0x10 | 0x20); // Break flag clear, bit 5 set
+        self.st |= 0x04; // Set Interrupt Disable
+        
+        // Load vector from 0xFFFE (same as BRK)
+        let lo = bus.read(0xFFFE) as u16;
+        let hi = bus.read(0xFFFF) as u16;
         self.pc = lo | (hi << 8);
     }
 
