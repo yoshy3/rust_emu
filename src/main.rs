@@ -94,6 +94,9 @@ fn main() -> Result<()> {
     let mut mmc1_logging = false;
     let mut apu_solo: u8 = 0;
     let mut wav_dump_path: Option<String> = None;
+    let mut lpf_cutoff: f32 = 14000.0; // default LPF cutoff frequency (Hz)
+    let mut hpf1_cutoff: f32 = 90.0;    // default HPF stage 1 (DC blocking)
+    let mut hpf2_cutoff: f32 = 150.0;   // default HPF stage 2
     for arg in args.iter().skip(1) {
         if arg == "--trace" {
             tracing = true;
@@ -106,10 +109,31 @@ fn main() -> Result<()> {
             }
         } else if arg.starts_with("--wav-dump=") {
             wav_dump_path = Some(arg.trim_start_matches("--wav-dump=").to_string());
+        } else if arg.starts_with("--lpf=") {
+            // --lpf=<freq> : LPF cutoff in Hz (default 14000)
+            if let Ok(f) = arg.trim_start_matches("--lpf=").parse::<f32>() {
+                lpf_cutoff = f.clamp(1000.0, 22000.0);
+            }
+        } else if arg.starts_with("--hpf=") {
+            // --hpf=<freq1>,<freq2> or --hpf=<freq> (sets both stages)
+            let val = arg.trim_start_matches("--hpf=");
+            if let Some((a, b)) = val.split_once(',') {
+                if let Ok(f1) = a.parse::<f32>() {
+                    hpf1_cutoff = f1.clamp(0.0, 1000.0);
+                }
+                if let Ok(f2) = b.parse::<f32>() {
+                    hpf2_cutoff = f2.clamp(0.0, 1000.0);
+                }
+            } else if let Ok(f) = val.parse::<f32>() {
+                let f = f.clamp(0.0, 1000.0);
+                hpf1_cutoff = f;
+                hpf2_cutoff = f;
+            }
         } else if !arg.starts_with("--") && rom_path.is_none() {
             rom_path = Some(PathBuf::from(arg));
         }
     }
+    println!("[Audio] LPF: {} Hz, HPF: {} / {} Hz", lpf_cutoff, hpf1_cutoff, hpf2_cutoff);
 
     let rom_data = if let Some(path) = rom_path.as_ref() {
         std::fs::read(path).map_err(Error::msg)?
@@ -295,22 +319,22 @@ fn main() -> Result<()> {
                                 // NES audio filter chain: LP first, then HP
                                 let fs = sample_rate as f32;
 
-                                // Stage 1-2: Low-pass ~14 kHz (2nd-order cascaded)
-                                let k_lp = std::f32::consts::TAU * 14000.0 / fs;
+                                // Stage 1-2: Low-pass (2nd-order cascaded)
+                                let k_lp = std::f32::consts::TAU * lpf_cutoff / fs;
                                 let a_lp = k_lp / (1.0 + k_lp);
                                 let lp1 = a_lp * raw + (1.0 - a_lp) * lp1_prev_out;
                                 lp1_prev_out = lp1;
                                 let lp2 = a_lp * lp1 + (1.0 - a_lp) * lp2_prev_out;
                                 lp2_prev_out = lp2;
 
-                                // Stage 3: High-pass ~90 Hz (DC blocking)
-                                let k1 = 1.0 / (1.0 + std::f32::consts::TAU * 90.0 / fs);
+                                // Stage 3: High-pass (DC blocking)
+                                let k1 = 1.0 / (1.0 + std::f32::consts::TAU * hpf1_cutoff / fs);
                                 let hp1 = k1 * (hp1_prev_out + lp2 - hp1_prev_in);
                                 hp1_prev_in = lp2;
                                 hp1_prev_out = hp1;
 
-                                // Stage 4: High-pass ~150 Hz
-                                let k2 = 1.0 / (1.0 + std::f32::consts::TAU * 150.0 / fs);
+                                // Stage 4: High-pass
+                                let k2 = 1.0 / (1.0 + std::f32::consts::TAU * hpf2_cutoff / fs);
                                 let hp2 = k2 * (hp2_prev_out + hp1 - hp2_prev_in);
                                 hp2_prev_in = hp1;
                                 hp2_prev_out = hp2;

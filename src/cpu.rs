@@ -7,6 +7,11 @@ pub struct Cpu {
     pub st: u8,
     pub pc: u16,
     pub sp: u8,
+    /// Extra cycles accumulated during instruction execution
+    /// (branch taken penalty, page crossing penalty)
+    pub extra_cycles: u16,
+    /// Set by get_operand_address when AbsoluteX/AbsoluteY/IndirectY crosses a page boundary
+    pub page_crossed: bool,
 }
 
 impl Cpu {
@@ -24,6 +29,8 @@ impl Cpu {
             st: 0,
             pc: 0,
             sp: 0xFD,
+            extra_cycles: 0,
+            page_crossed: false,
         }
     }
 
@@ -138,6 +145,8 @@ impl Cpu {
 
     pub fn step(&mut self, bus: &mut Bus) -> u16 {
         bus.begin_cpu_step();
+        self.extra_cycles = 0;
+        self.page_crossed = false;
 
         // Fetch
         let opcode = bus.read(self.pc);
@@ -882,12 +891,34 @@ impl Cpu {
             }
         }
 
-        let cycles = crate::opcodes::OPCODES_MAP
+        let base_cycles = crate::opcodes::OPCODES_MAP
             .get(&opcode)
             .map(|op| op.cycles)
-            .unwrap_or(0);
+            .unwrap_or(0) as u16;
+
+        // Apply page-crossing penalty for read instructions:
+        // AbsoluteX/AbsoluteY reads (base 4) and IndirectY reads (base 5)
+        // get +1 cycle when crossing a page boundary.
+        // Write/RMW instructions already include the extra cycle in their base count.
+        if self.page_crossed {
+            let mode = crate::opcodes::OPCODES_MAP
+                .get(&opcode)
+                .map(|op| &op.mode);
+            match mode {
+                Some(AddressingMode::AbsoluteX) | Some(AddressingMode::AbsoluteY)
+                    if base_cycles == 4 =>
+                {
+                    self.extra_cycles += 1;
+                }
+                Some(AddressingMode::IndirectY) if base_cycles == 5 => {
+                    self.extra_cycles += 1;
+                }
+                _ => {}
+            }
+        }
+
         let dma_cycles = bus.poll_dma_cycles() as u16;
-        (cycles as u16) + dma_cycles
+        base_cycles + self.extra_cycles + dma_cycles
     }
 
     fn fetch_byte(&mut self, bus: &mut Bus) -> u8 {
@@ -1060,7 +1091,12 @@ impl Cpu {
     fn branch(&mut self, bus: &mut Bus, condition: bool) {
         let offset = self.fetch_byte(bus) as i8;
         if condition {
+            self.extra_cycles += 1; // +1 for branch taken
             let jump_addr = self.pc.wrapping_add(offset as u16);
+            // +1 more if branch crosses a page boundary
+            if (self.pc & 0xFF00) != (jump_addr & 0xFF00) {
+                self.extra_cycles += 1;
+            }
             self.pc = jump_addr;
         }
     }
@@ -1776,13 +1812,19 @@ impl Cpu {
             }
             AddressingMode::Absolute => self.fetch_word(bus),
             AddressingMode::AbsoluteX => {
-                let addr = self.fetch_word(bus);
-                let addr = addr.wrapping_add(self.x as u16);
+                let base = self.fetch_word(bus);
+                let addr = base.wrapping_add(self.x as u16);
+                if (base & 0xFF00) != (addr & 0xFF00) {
+                    self.page_crossed = true;
+                }
                 addr
             }
             AddressingMode::AbsoluteY => {
-                let addr = self.fetch_word(bus);
-                let addr = addr.wrapping_add(self.y as u16);
+                let base = self.fetch_word(bus);
+                let addr = base.wrapping_add(self.y as u16);
+                if (base & 0xFF00) != (addr & 0xFF00) {
+                    self.page_crossed = true;
+                }
                 addr
             }
             AddressingMode::IndirectX => {
@@ -1798,6 +1840,9 @@ impl Cpu {
                 let hi = bus.read(base.wrapping_add(1) as u16) as u16;
                 let deref_base = lo | (hi << 8);
                 let addr = deref_base.wrapping_add(self.y as u16);
+                if (deref_base & 0xFF00) != (addr & 0xFF00) {
+                    self.page_crossed = true;
+                }
                 addr
             }
             AddressingMode::Indirect => {

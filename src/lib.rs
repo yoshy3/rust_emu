@@ -158,26 +158,47 @@ impl Nes {
 
         self.bus.tick_apu(cycles as u16);
 
+        let mut total_cycles = cycles as usize;
+
         // NMI is checked via the persistent nmi_interrupt flag, which is set
         // by tick() during both catch-up (bus.read/write) and remaining cycles.
         if self.bus.ppu.nmi_interrupt {
+            // NMI takes 7 CPU cycles on the 6502. Account for PPU and APU advancement.
+            self.bus.ppu_cycles_advanced = 0;
             self.cpu.nmi(&mut self.bus);
             self.bus.ppu.nmi_interrupt = false;
+            let nmi_ppu_remaining = (7u16 * 3).saturating_sub(self.bus.ppu_cycles_advanced);
+            self.bus.ppu.tick(nmi_ppu_remaining);
+            self.bus.tick_apu(7);
+            total_cycles += 7;
         }
 
         // Handle IRQ from APU (frame counter IRQ / DMC IRQ)
-        if self.bus.apu.is_irq_pending() {
+        // Only dispatch when the CPU I flag is clear (IRQ not masked).
+        // If I=1, the IRQ stays pending and will fire once I is cleared.
+        if self.bus.apu.is_irq_pending() && (self.cpu.st & 0x04) == 0 {
+            self.bus.ppu_cycles_advanced = 0;
             self.cpu.irq(&mut self.bus);
+            let irq_ppu_remaining = (7u16 * 3).saturating_sub(self.bus.ppu_cycles_advanced);
+            self.bus.ppu.tick(irq_ppu_remaining);
+            self.bus.tick_apu(7);
+            total_cycles += 7;
         }
 
         // Handle IRQ from MMC3 scanline counter
-        if self.bus.ppu.mmc3_irq_pending {
+        // Only dispatch when CPU I flag is clear.
+        if self.bus.ppu.mmc3_irq_pending && (self.cpu.st & 0x04) == 0 {
+            self.bus.ppu_cycles_advanced = 0;
             self.cpu.irq(&mut self.bus);
             self.bus.ppu.mmc3_irq_pending = false;
+            let irq_ppu_remaining = (7u16 * 3).saturating_sub(self.bus.ppu_cycles_advanced);
+            self.bus.ppu.tick(irq_ppu_remaining);
+            self.bus.tick_apu(7);
+            total_cycles += 7;
         }
 
         // Audio logic
-        let step_cycles = cycles as u32;
+        let step_cycles = total_cycles as u32;
         let current_output = self.bus.apu.averaged_output();
         self.apu_sum += current_output * step_cycles as f32;
         self.apu_count += step_cycles;
@@ -230,7 +251,7 @@ impl Nes {
             self.audio_samples_needed -= num_samples as f64;
         }
 
-        cycles as usize
+        total_cycles
     }
 
     pub fn get_audio_samples(&mut self) -> Vec<f32> {
