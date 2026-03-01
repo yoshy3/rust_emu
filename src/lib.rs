@@ -56,8 +56,13 @@ pub struct Nes {
     audio_samples_needed: f64,
     apu_sum: f32,
     apu_count: u32,
-    prev_apu_sample: f32,
-    filtered_sample: f32,
+    // NES hardware audio filter chain state (HP 90Hz → HP 440Hz → LP 14kHz ×2)
+    hp1_prev_in: f32,
+    hp1_prev_out: f32,
+    hp2_prev_in: f32,
+    hp2_prev_out: f32,
+    lp1_prev_out: f32,
+    lp2_prev_out: f32,
 }
 
 impl Nes {
@@ -81,8 +86,12 @@ impl Nes {
             audio_samples_needed: 0.0,
             apu_sum: 0.0,
             apu_count: 0,
-            prev_apu_sample: 0.0,
-            filtered_sample: 0.0,
+            hp1_prev_in: 0.0,
+            hp1_prev_out: 0.0,
+            hp2_prev_in: 0.0,
+            hp2_prev_out: 0.0,
+            lp1_prev_out: 0.0,
+            lp2_prev_out: 0.0,
         }
     }
 
@@ -149,27 +158,48 @@ impl Nes {
 
         self.bus.tick_apu(cycles as u16);
 
+        let mut total_cycles = cycles as usize;
+
         // NMI is checked via the persistent nmi_interrupt flag, which is set
         // by tick() during both catch-up (bus.read/write) and remaining cycles.
         if self.bus.ppu.nmi_interrupt {
+            // NMI takes 7 CPU cycles on the 6502. Account for PPU and APU advancement.
+            self.bus.ppu_cycles_advanced = 0;
             self.cpu.nmi(&mut self.bus);
             self.bus.ppu.nmi_interrupt = false;
+            let nmi_ppu_remaining = (7u16 * 3).saturating_sub(self.bus.ppu_cycles_advanced);
+            self.bus.ppu.tick(nmi_ppu_remaining);
+            self.bus.tick_apu(7);
+            total_cycles += 7;
         }
 
         // Handle IRQ from APU (frame counter IRQ / DMC IRQ)
-        if self.bus.apu.is_irq_pending() {
+        // Only dispatch when the CPU I flag is clear (IRQ not masked).
+        // If I=1, the IRQ stays pending and will fire once I is cleared.
+        if self.bus.apu.is_irq_pending() && (self.cpu.st & 0x04) == 0 {
+            self.bus.ppu_cycles_advanced = 0;
             self.cpu.irq(&mut self.bus);
+            let irq_ppu_remaining = (7u16 * 3).saturating_sub(self.bus.ppu_cycles_advanced);
+            self.bus.ppu.tick(irq_ppu_remaining);
+            self.bus.tick_apu(7);
+            total_cycles += 7;
         }
 
         // Handle IRQ from MMC3 scanline counter
-        if self.bus.ppu.mmc3_irq_pending {
+        // Only dispatch when CPU I flag is clear.
+        if self.bus.ppu.mmc3_irq_pending && (self.cpu.st & 0x04) == 0 {
+            self.bus.ppu_cycles_advanced = 0;
             self.cpu.irq(&mut self.bus);
             self.bus.ppu.mmc3_irq_pending = false;
+            let irq_ppu_remaining = (7u16 * 3).saturating_sub(self.bus.ppu_cycles_advanced);
+            self.bus.ppu.tick(irq_ppu_remaining);
+            self.bus.tick_apu(7);
+            total_cycles += 7;
         }
 
         // Audio logic
-        let step_cycles = cycles as u32;
-        let current_output = self.bus.apu.output();
+        let step_cycles = total_cycles as u32;
+        let current_output = self.bus.apu.averaged_output();
         self.apu_sum += current_output * step_cycles as f32;
         self.apu_count += step_cycles;
 
@@ -178,20 +208,39 @@ impl Nes {
         if self.audio_samples_needed >= 1.0 {
             let num_samples = self.audio_samples_needed as i32;
             for _ in 0..num_samples {
-                let avg_sample = if self.apu_count > 0 {
+                let raw = if self.apu_count > 0 {
                     self.apu_sum / self.apu_count as f32
                 } else {
                     current_output
                 };
 
-                // DC Blocker (High-pass filter at ~20Hz)
-                self.filtered_sample =
-                    avg_sample - self.prev_apu_sample + 0.999 * self.filtered_sample;
-                self.prev_apu_sample = avg_sample;
+                // NES hardware audio filter chain
+                // LPF first to smooth transients before HPF can amplify them
+                let fs = self.audio_sample_rate;
+
+                // Stage 1-2: Low-pass ~14 kHz (2nd-order cascaded for 12dB/oct)
+                let k_lp = std::f32::consts::TAU * 14000.0 / fs;
+                let a_lp = k_lp / (1.0 + k_lp);
+                let lp1 = a_lp * raw + (1.0 - a_lp) * self.lp1_prev_out;
+                self.lp1_prev_out = lp1;
+                let lp2 = a_lp * lp1 + (1.0 - a_lp) * self.lp2_prev_out;
+                self.lp2_prev_out = lp2;
+
+                // Stage 3: High-pass ~90 Hz (DC blocking / coupling capacitor)
+                let k1 = 1.0 / (1.0 + std::f32::consts::TAU * 90.0 / fs);
+                let hp1 = k1 * (self.hp1_prev_out + lp2 - self.hp1_prev_in);
+                self.hp1_prev_in = lp2;
+                self.hp1_prev_out = hp1;
+
+                // Stage 4: High-pass ~150 Hz
+                let k2 = 1.0 / (1.0 + std::f32::consts::TAU * 150.0 / fs);
+                let hp2 = k2 * (self.hp2_prev_out + hp1 - self.hp2_prev_in);
+                self.hp2_prev_in = hp1;
+                self.hp2_prev_out = hp2;
 
                 // Cap buffer size to avoid memory leaks if JS doesn't consume
                 if self.audio_samples.len() < 8192 {
-                    self.audio_samples.push(self.filtered_sample);
+                    self.audio_samples.push(hp2);
                 }
             }
 
@@ -202,7 +251,7 @@ impl Nes {
             self.audio_samples_needed -= num_samples as f64;
         }
 
-        cycles as usize
+        total_cycles
     }
 
     pub fn get_audio_samples(&mut self) -> Vec<f32> {
