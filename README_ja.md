@@ -17,7 +17,7 @@ Rustで書かれた、デスクトップ（Windows/Mac/Linux）およびWebAssem
 - **レンダリング**: `pixels` ライブラリを使用したハードウェアアクセラレーションによる2D描画。
 - **オーディオ**: OversamplingとDCブロッカーを搭載したAPU実装（デスクトップ・Web両対応）。
 - **Web対応**: `wasm-bindgen` を使用したビルドと、720p相当へのスケーリング対応。
-- **Mapper対応**: Mapper 0 (NROM), Mapper 1 (MMC1), Mapper 2 (UxROM), Mapper 3 (CNROM)。
+- **Mapper対応**: Mapper 0 (NROM), Mapper 1 (MMC1), Mapper 2 (UxROM), Mapper 3 (CNROM), Mapper 4 (MMC3)。
 - **バッテリセーブ（デスクトップ）**: バッテリバックアップ対応ROMでは、PRG RAMをROMと同じ場所の `.sav` ファイルに保存/復元します。
 
 ## 必要条件

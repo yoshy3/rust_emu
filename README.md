@@ -16,7 +16,7 @@ A Nintendo Entertainment System (NES) emulator written in Rust, targeting generi
 - **Cross-Platform**: Runs natively on desktop and in modern web browsers.
 - **Rendering**: Uses `pixels` for hardware-accelerated 2D pixel buffer rendering.
 - **Web Support**: Built with `wasm-bindgen`.
-- **Mapper Support**: Mapper 0 (NROM), Mapper 1 (MMC1), Mapper 2 (UxROM), Mapper 3 (CNROM).
+- **Mapper Support**: Mapper 0 (NROM), Mapper 1 (MMC1), Mapper 2 (UxROM), Mapper 3 (CNROM), Mapper 4 (MMC3).
 - **Battery Save (Desktop)**: For battery-backed cartridges, PRG RAM is loaded/saved as `.sav` next to the ROM.
 
 ## Prerequisites
