@@ -161,6 +161,12 @@ impl Nes {
             self.cpu.irq(&mut self.bus);
         }
 
+        // Handle IRQ from MMC3 scanline counter
+        if self.bus.ppu.mmc3_irq_pending {
+            self.cpu.irq(&mut self.bus);
+            self.bus.ppu.mmc3_irq_pending = false;
+        }
+
         // Audio logic
         let step_cycles = cycles as u32;
         let current_output = self.bus.apu.output();
