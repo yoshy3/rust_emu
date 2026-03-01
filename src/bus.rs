@@ -23,6 +23,10 @@ pub struct Bus {
     pub cpu_step_counter: u64,
     pub mmc1_last_write_step: Option<u64>,
     pub mmc1_debug: bool,
+    // MMC3 (Mapper 4) state
+    pub mmc3_bank_select: u8,
+    pub mmc3_bank_data: [u8; 8],
+    pub mmc3_prg_ram_protect: u8,
     /// Tracks how many PPU cycles have been "caught up" during the current CPU instruction.
     /// This is used to simulate parallel CPU/PPU execution: the PPU advances 3 cycles
     /// for every CPU memory access, so register reads see the correct PPU state.
@@ -55,6 +59,9 @@ impl Bus {
             cpu_step_counter: 0,
             mmc1_last_write_step: None,
             mmc1_debug,
+            mmc3_bank_select: 0,
+            mmc3_bank_data: [0; 8],
+            mmc3_prg_ram_protect: 0x80, // PRG RAM enabled by default
             ppu_cycles_advanced: 0,
         };
         bus.sync_mmc1_state_to_ppu();
@@ -137,6 +144,8 @@ impl Bus {
                     self.ppu.chr_bank = data as usize;
                 } else if self.mapper == 1 {
                     self.write_mmc1(addr, data);
+                } else if self.mapper == 4 {
+                    self.write_mmc3(addr, data);
                 }
             }
             _ => {}
@@ -167,6 +176,17 @@ impl Bus {
         self.mmc1_last_write_step = None;
         self.ppu.chr_bank = 0;
         self.sync_mmc1_state_to_ppu();
+        // MMC3
+        self.mmc3_bank_select = 0;
+        self.mmc3_bank_data = [0; 8];
+        self.mmc3_prg_ram_protect = 0x80;
+        self.ppu.mmc3_bank_select = 0;
+        self.ppu.mmc3_bank_data = [0; 8];
+        self.ppu.mmc3_irq_counter = 0;
+        self.ppu.mmc3_irq_latch = 0;
+        self.ppu.mmc3_irq_reload = false;
+        self.ppu.mmc3_irq_enabled = false;
+        self.ppu.mmc3_irq_pending = false;
     }
 
     pub fn set_mmc1_debug(&mut self, enabled: bool) {
@@ -236,6 +256,10 @@ impl Bus {
 
         if self.mapper == 1 {
             return self.read_prg_rom_mmc1(addr as usize);
+        }
+
+        if self.mapper == 4 {
+            return self.read_prg_rom_mmc3(addr as usize);
         }
 
         if self.mapper == 2 {
@@ -336,6 +360,115 @@ impl Bus {
                 _ => Mirroring::Horizontal,
             };
         }
+    }
+
+    // ── MMC3 (Mapper 4) ──────────────────────────────────────────────
+
+    fn write_mmc3(&mut self, addr: u16, data: u8) {
+        let even = (addr & 0x0001) == 0;
+        match addr {
+            0x8000..=0x9FFF => {
+                if even {
+                    // $8000 (even): Bank select
+                    self.mmc3_bank_select = data;
+                } else {
+                    // $8001 (odd): Bank data
+                    let reg = (self.mmc3_bank_select & 0x07) as usize;
+                    self.mmc3_bank_data[reg] = match reg {
+                        // R0, R1: 2KB CHR banks — ignore lowest bit
+                        0 | 1 => data & 0xFE,
+                        // R6, R7: PRG banks — 6 bit only
+                        6 | 7 => data & 0x3F,
+                        // R2-R5: 1KB CHR banks
+                        _ => data,
+                    };
+                }
+                self.sync_mmc3_state_to_ppu();
+            }
+            0xA000..=0xBFFF => {
+                if even {
+                    // $A000 (even): Mirroring
+                    if self.ppu.mirroring != Mirroring::FourScreen {
+                        self.ppu.mirroring = if (data & 0x01) != 0 {
+                            Mirroring::Horizontal
+                        } else {
+                            Mirroring::Vertical
+                        };
+                    }
+                } else {
+                    // $A001 (odd): PRG RAM protect
+                    self.mmc3_prg_ram_protect = data;
+                    self.prg_ram_enabled = (data & 0x80) != 0;
+                }
+            }
+            0xC000..=0xDFFF => {
+                if even {
+                    // $C000 (even): IRQ latch
+                    self.ppu.mmc3_irq_latch = data;
+                } else {
+                    // $C001 (odd): IRQ reload
+                    self.ppu.mmc3_irq_reload = true;
+                    self.ppu.mmc3_irq_counter = 0;
+                }
+            }
+            0xE000..=0xFFFF => {
+                if even {
+                    // $E000 (even): IRQ disable + acknowledge
+                    self.ppu.mmc3_irq_enabled = false;
+                    self.ppu.mmc3_irq_pending = false;
+                } else {
+                    // $E001 (odd): IRQ enable
+                    self.ppu.mmc3_irq_enabled = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn read_prg_rom_mmc3(&self, addr: usize) -> u8 {
+        if self.prg_rom.is_empty() {
+            return 0;
+        }
+        let bank_8k = 0x2000usize;
+        let num_8k_banks = (self.prg_rom.len() / bank_8k).max(1);
+        let prg_mode = (self.mmc3_bank_select >> 6) & 0x01;
+        let second_last = num_8k_banks.wrapping_sub(2) % num_8k_banks;
+        let last = num_8k_banks - 1;
+
+        let (b0, b1, b2, b3) = if prg_mode == 0 {
+            // Mode 0: $8000=R6, $A000=R7, $C000=(-2), $E000=(-1)
+            (
+                self.mmc3_bank_data[6] as usize % num_8k_banks,
+                self.mmc3_bank_data[7] as usize % num_8k_banks,
+                second_last,
+                last,
+            )
+        } else {
+            // Mode 1: $8000=(-2), $A000=R7, $C000=R6, $E000=(-1)
+            (
+                second_last,
+                self.mmc3_bank_data[7] as usize % num_8k_banks,
+                self.mmc3_bank_data[6] as usize % num_8k_banks,
+                last,
+            )
+        };
+
+        let bank = match addr {
+            0x0000..=0x1FFF => b0,
+            0x2000..=0x3FFF => b1,
+            0x4000..=0x5FFF => b2,
+            _ => b3,
+        };
+        let offset = bank * bank_8k + (addr & 0x1FFF);
+        self.prg_rom[offset % self.prg_rom.len()]
+    }
+
+    fn sync_mmc3_state_to_ppu(&mut self) {
+        if self.mapper != 4 {
+            return;
+        }
+        self.ppu.mmc3_bank_select = self.mmc3_bank_select;
+        self.ppu.mmc3_bank_data = self.mmc3_bank_data;
     }
 
     fn read_prg_rom_mmc1(&self, addr: usize) -> u8 {

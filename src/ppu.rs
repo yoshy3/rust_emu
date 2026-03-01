@@ -33,6 +33,15 @@ pub struct Ppu {
     pub mmc1_chr_bank0: u8,
     pub mmc1_chr_bank1: u8,
 
+    // MMC3 (Mapper 4) state
+    pub mmc3_bank_select: u8,
+    pub mmc3_bank_data: [u8; 8],
+    pub mmc3_irq_counter: u8,
+    pub mmc3_irq_latch: u8,
+    pub mmc3_irq_reload: bool,
+    pub mmc3_irq_enabled: bool,
+    pub mmc3_irq_pending: bool,
+
     pub nmi_interrupt: bool,
     pub nmi_output: bool, // Current NMI output level (VBlank && NMI enabled)
 
@@ -159,6 +168,13 @@ impl Ppu {
             mmc1_control: 0x0C,
             mmc1_chr_bank0: 0,
             mmc1_chr_bank1: 0,
+            mmc3_bank_select: 0,
+            mmc3_bank_data: [0; 8],
+            mmc3_irq_counter: 0,
+            mmc3_irq_latch: 0,
+            mmc3_irq_reload: false,
+            mmc3_irq_enabled: false,
+            mmc3_irq_pending: false,
             nmi_interrupt: false,
             nmi_output: false,
             scanline: 0,
@@ -274,6 +290,11 @@ impl Ppu {
                         if self.cycle >= 280 && self.cycle <= 304 {
                             self.transfer_address_y();
                         }
+                    }
+
+                    // MMC3 scanline IRQ counter — clock at cycle 260
+                    if self.mapper == 4 && self.cycle == 260 {
+                        self.clock_mmc3_irq();
                     }
                 }
             }
@@ -482,6 +503,9 @@ impl Ppu {
                         };
                         let offset = (target_bank * bank_size) + addr as usize;
                         self.chr_rom[offset]
+                    } else if self.mapper == 4 {
+                        let offset = self.mmc3_chr_addr(addr);
+                        self.chr_rom[offset % self.chr_rom.len()]
                     } else {
                         self.chr_rom[addr as usize % self.chr_rom.len()]
                     }
@@ -489,6 +513,9 @@ impl Ppu {
                     if self.mapper == 1 {
                         let offset = self.mmc1_chr_offset(addr as usize, self.chr_ram.len());
                         self.chr_ram[offset]
+                    } else if self.mapper == 4 {
+                        let offset = self.mmc3_chr_addr(addr);
+                        self.chr_ram[offset % self.chr_ram.len()]
                     } else {
                         self.chr_ram[addr as usize]
                     }
@@ -509,6 +536,12 @@ impl Ppu {
                     if self.mapper == 1 {
                         let offset = self.mmc1_chr_offset(addr as usize, self.chr_ram.len());
                         self.chr_ram[offset] = data;
+                    } else if self.mapper == 4 {
+                        let offset = self.mmc3_chr_addr(addr);
+                        let len = self.chr_ram.len();
+                        if len > 0 {
+                            self.chr_ram[offset % len] = data;
+                        }
                     } else {
                         self.chr_ram[addr as usize] = data;
                     }
@@ -595,6 +628,55 @@ impl Ppu {
             let num_banks = (total_len / bank_size).max(1);
             let bank = ((self.mmc1_chr_bank0 as usize) >> 1) % num_banks;
             (bank * bank_size + addr) % total_len
+        }
+    }
+
+    // ── MMC3 (Mapper 4) ──────────────────────────────────────────────
+
+    /// Compute physical CHR address for MMC3 bank mapping.
+    /// R0, R1 select 2KB banks; R2-R5 select 1KB banks.
+    /// CHR A12 inversion (bit 7 of bank_select) swaps the two 4KB halves.
+    fn mmc3_chr_addr(&self, addr: u16) -> usize {
+        let addr = addr as usize & 0x1FFF;
+        let chr_a12_invert = (self.mmc3_bank_select & 0x80) != 0;
+
+        let (bank, offset) = if !chr_a12_invert {
+            // Normal: 2KB+2KB at $0000, 1KB×4 at $1000
+            match addr {
+                0x0000..=0x07FF => (self.mmc3_bank_data[0] as usize, addr & 0x07FF),
+                0x0800..=0x0FFF => (self.mmc3_bank_data[1] as usize, addr & 0x07FF),
+                0x1000..=0x13FF => (self.mmc3_bank_data[2] as usize, addr & 0x03FF),
+                0x1400..=0x17FF => (self.mmc3_bank_data[3] as usize, addr & 0x03FF),
+                0x1800..=0x1BFF => (self.mmc3_bank_data[4] as usize, addr & 0x03FF),
+                _ => (self.mmc3_bank_data[5] as usize, addr & 0x03FF),
+            }
+        } else {
+            // Inverted: 1KB×4 at $0000, 2KB+2KB at $1000
+            match addr {
+                0x0000..=0x03FF => (self.mmc3_bank_data[2] as usize, addr & 0x03FF),
+                0x0400..=0x07FF => (self.mmc3_bank_data[3] as usize, addr & 0x03FF),
+                0x0800..=0x0BFF => (self.mmc3_bank_data[4] as usize, addr & 0x03FF),
+                0x0C00..=0x0FFF => (self.mmc3_bank_data[5] as usize, addr & 0x03FF),
+                0x1000..=0x17FF => (self.mmc3_bank_data[0] as usize, addr & 0x07FF),
+                _ => (self.mmc3_bank_data[1] as usize, addr & 0x07FF),
+            }
+        };
+
+        // bank is in 1KB units → multiply by 0x400
+        bank * 0x0400 + offset
+    }
+
+    /// Clock the MMC3 scanline IRQ counter.
+    /// Called once per visible/pre-render scanline at cycle 260.
+    fn clock_mmc3_irq(&mut self) {
+        if self.mmc3_irq_counter == 0 || self.mmc3_irq_reload {
+            self.mmc3_irq_counter = self.mmc3_irq_latch;
+            self.mmc3_irq_reload = false;
+        } else {
+            self.mmc3_irq_counter -= 1;
+        }
+        if self.mmc3_irq_counter == 0 && self.mmc3_irq_enabled {
+            self.mmc3_irq_pending = true;
         }
     }
 
