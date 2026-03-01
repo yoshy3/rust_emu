@@ -4,6 +4,7 @@ use log::error;
 use pixels::{Pixels, SurfaceTexture};
 use rust_emu::joypad::JoypadButton;
 use std::collections::VecDeque;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,6 +13,47 @@ use winit::event::{Event, VirtualKeyCode};
 use winit::event_loop::EventLoop;
 use winit::window::WindowBuilder;
 use winit_input_helper::WinitInputHelper;
+
+/// Write a stereo WAV file (IEEE float 32-bit)
+/// Left channel = raw (pre-filter), Right channel = filtered (post-filter)
+fn write_wav_file(path: &str, sample_rate: u32, samples: &[(f32, f32)]) -> std::io::Result<()> {
+    let mut f = std::fs::File::create(path)?;
+    let num_channels: u16 = 2;
+    let bits_per_sample: u16 = 32;
+    let byte_rate = sample_rate * num_channels as u32 * bits_per_sample as u32 / 8;
+    let block_align = num_channels * bits_per_sample / 8;
+    let data_size = samples.len() as u32 * block_align as u32;
+    let file_size = 36 + data_size;
+
+    // RIFF header
+    f.write_all(b"RIFF")?;
+    f.write_all(&file_size.to_le_bytes())?;
+    f.write_all(b"WAVE")?;
+
+    // fmt chunk (IEEE float = format tag 3)
+    f.write_all(b"fmt ")?;
+    f.write_all(&16u32.to_le_bytes())?;       // chunk size
+    f.write_all(&3u16.to_le_bytes())?;        // format: IEEE float
+    f.write_all(&num_channels.to_le_bytes())?;
+    f.write_all(&sample_rate.to_le_bytes())?;
+    f.write_all(&byte_rate.to_le_bytes())?;
+    f.write_all(&block_align.to_le_bytes())?;
+    f.write_all(&bits_per_sample.to_le_bytes())?;
+
+    // data chunk
+    f.write_all(b"data")?;
+    f.write_all(&data_size.to_le_bytes())?;
+    for &(left, right) in samples {
+        f.write_all(&left.to_le_bytes())?;
+        f.write_all(&right.to_le_bytes())?;
+    }
+
+    println!("[WAV] Wrote {} samples ({:.1}s) to {}",
+        samples.len(),
+        samples.len() as f64 / sample_rate as f64,
+        path);
+    Ok(())
+}
 
 const _SAMPLE_RATE: u32 = 44100;
 
@@ -50,11 +92,20 @@ fn main() -> Result<()> {
     let mut rom_path: Option<PathBuf> = None;
     let mut tracing = false;
     let mut mmc1_logging = false;
+    let mut apu_solo: u8 = 0;
+    let mut wav_dump_path: Option<String> = None;
     for arg in args.iter().skip(1) {
         if arg == "--trace" {
             tracing = true;
         } else if arg == "--mmc1-log" {
             mmc1_logging = true;
+        } else if arg.starts_with("--apu-solo=") {
+            // --apu-solo=1..5 (1=pulse1, 2=pulse2, 3=triangle, 4=noise, 5=dmc)
+            if let Ok(ch) = arg.trim_start_matches("--apu-solo=").parse::<u8>() {
+                apu_solo = ch;
+            }
+        } else if arg.starts_with("--wav-dump=") {
+            wav_dump_path = Some(arg.trim_start_matches("--wav-dump=").to_string());
         } else if !arg.starts_with("--") && rom_path.is_none() {
             rom_path = Some(PathBuf::from(arg));
         }
@@ -85,6 +136,12 @@ fn main() -> Result<()> {
     let mut nes = rust_emu::Nes::new_with_rom(&rom_data);
     if mmc1_logging {
         nes.bus.set_mmc1_debug(true);
+    }
+    if apu_solo > 0 {
+        let names = ["", "Pulse1", "Pulse2", "Triangle", "Noise", "DMC"];
+        let name = names.get(apu_solo as usize).unwrap_or(&"?");
+        println!("[APU] Solo channel: {} ({})", apu_solo, name);
+        nes.bus.apu.solo_channel = apu_solo;
     }
     if let Some(path) = save_path.as_ref() {
         if let Ok(save_data) = std::fs::read(path) {
@@ -134,9 +191,20 @@ fn main() -> Result<()> {
     let mut last_frame_time = Instant::now();
     let frame_duration = Duration::from_nanos(16639267); // NES NTSC ~60.098 Hz
 
-    // Simple High-pass filter (DC blocker) state
-    let mut prev_apu_sample = 0.0;
-    let mut filtered_sample = 0.0;
+    // NES audio filter chain state (LP 14kHz ×2 → HP 90Hz → HP 150Hz)
+    let mut lp1_prev_out: f32 = 0.0;
+    let mut lp2_prev_out: f32 = 0.0;
+    let mut hp1_prev_in: f32 = 0.0;
+    let mut hp1_prev_out: f32 = 0.0;
+    let mut hp2_prev_in: f32 = 0.0;
+    let mut hp2_prev_out: f32 = 0.0;
+
+    // WAV dump buffer: (raw, filtered) stereo pairs
+    let mut wav_samples: Vec<(f32, f32)> = Vec::new();
+    let wav_enabled = wav_dump_path.is_some();
+    if wav_enabled {
+        println!("[WAV] Capture enabled → {}", wav_dump_path.as_deref().unwrap());
+    }
 
     if tracing {
         // Run in headless mode for tracing
@@ -170,6 +238,11 @@ fn main() -> Result<()> {
             if input.update(&event) {
                 if input.key_pressed(VirtualKeyCode::Escape) || input.close_requested() {
                     write_save_if_needed(&nes, &save_path);
+                    if let Some(ref path) = wav_dump_path {
+                        if let Err(e) = write_wav_file(path, sample_rate, &wav_samples) {
+                            error!("Failed to write WAV: {}", e);
+                        }
+                    }
                     control_flow.set_exit();
                     return;
                 }
@@ -204,7 +277,7 @@ fn main() -> Result<()> {
                     cycles += step_cycles;
 
                     // Accumulate APU output for averaging (Oversampling)
-                    let current_output = nes.bus.apu.output();
+                    let current_output = nes.bus.apu.averaged_output();
                     apu_sum += current_output * step_cycles as f32;
                     apu_count += step_cycles as i32;
 
@@ -212,24 +285,46 @@ fn main() -> Result<()> {
                     if audio_samples_needed >= 1.0 {
                         let mut buffer = audio_buffer.lock().unwrap();
                         if buffer.len() < 4096 {
-                            for _ in 0..audio_samples_needed as i32 {
-                                let avg_sample = if apu_count > 0 {
-                                    apu_sum / apu_count as f32
-                                } else {
-                                    current_output
-                                };
+                            let num_samples = audio_samples_needed as i32;
+                            let raw = if apu_count > 0 {
+                                apu_sum / apu_count as f32
+                            } else {
+                                current_output
+                            };
+                            for _ in 0..num_samples {
+                                // NES audio filter chain: LP first, then HP
+                                let fs = sample_rate as f32;
 
-                                // Reset accumulator
-                                apu_sum = 0.0;
-                                apu_count = 0;
+                                // Stage 1-2: Low-pass ~14 kHz (2nd-order cascaded)
+                                let k_lp = std::f32::consts::TAU * 14000.0 / fs;
+                                let a_lp = k_lp / (1.0 + k_lp);
+                                let lp1 = a_lp * raw + (1.0 - a_lp) * lp1_prev_out;
+                                lp1_prev_out = lp1;
+                                let lp2 = a_lp * lp1 + (1.0 - a_lp) * lp2_prev_out;
+                                lp2_prev_out = lp2;
 
-                                // DC Blocker (High-pass filter at ~20Hz)
-                                filtered_sample =
-                                    avg_sample - prev_apu_sample + 0.999 * filtered_sample;
-                                prev_apu_sample = avg_sample;
+                                // Stage 3: High-pass ~90 Hz (DC blocking)
+                                let k1 = 1.0 / (1.0 + std::f32::consts::TAU * 90.0 / fs);
+                                let hp1 = k1 * (hp1_prev_out + lp2 - hp1_prev_in);
+                                hp1_prev_in = lp2;
+                                hp1_prev_out = hp1;
 
-                                buffer.push_back(filtered_sample);
+                                // Stage 4: High-pass ~150 Hz
+                                let k2 = 1.0 / (1.0 + std::f32::consts::TAU * 150.0 / fs);
+                                let hp2 = k2 * (hp2_prev_out + hp1 - hp2_prev_in);
+                                hp2_prev_in = hp1;
+                                hp2_prev_out = hp2;
+
+                                // Capture for WAV dump
+                                if wav_enabled {
+                                    wav_samples.push((raw, hp2));
+                                }
+
+                                buffer.push_back(hp2);
                             }
+                            // Reset accumulator once per batch (NOT per sample)
+                            apu_sum = 0.0;
+                            apu_count = 0;
                         }
                         audio_samples_needed -= audio_samples_needed as i32 as f64;
                     }
