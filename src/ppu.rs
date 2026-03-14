@@ -42,6 +42,9 @@ pub struct Ppu {
     pub mmc3_irq_enabled: bool,
     pub mmc3_irq_pending: bool,
 
+    // VRC4 (Mapper 21/23/25) state
+    pub vrc4_chr_banks: [u16; 8],
+
     pub nmi_interrupt: bool,
     pub nmi_output: bool, // Current NMI output level (VBlank && NMI enabled)
 
@@ -175,6 +178,7 @@ impl Ppu {
             mmc3_irq_reload: false,
             mmc3_irq_enabled: false,
             mmc3_irq_pending: false,
+            vrc4_chr_banks: [0; 8],
             nmi_interrupt: false,
             nmi_output: false,
             scanline: 0,
@@ -506,6 +510,9 @@ impl Ppu {
                     } else if self.mapper == 4 {
                         let offset = self.mmc3_chr_addr(addr);
                         self.chr_rom[offset % self.chr_rom.len()]
+                    } else if self.mapper == 21 || self.mapper == 23 || self.mapper == 25 {
+                        let offset = self.vrc4_chr_addr(addr);
+                        self.chr_rom[offset % self.chr_rom.len()]
                     } else {
                         self.chr_rom[addr as usize % self.chr_rom.len()]
                     }
@@ -515,6 +522,9 @@ impl Ppu {
                         self.chr_ram[offset]
                     } else if self.mapper == 4 {
                         let offset = self.mmc3_chr_addr(addr);
+                        self.chr_ram[offset % self.chr_ram.len()]
+                    } else if self.mapper == 21 || self.mapper == 23 || self.mapper == 25 {
+                        let offset = self.vrc4_chr_addr(addr);
                         self.chr_ram[offset % self.chr_ram.len()]
                     } else {
                         self.chr_ram[addr as usize]
@@ -538,6 +548,12 @@ impl Ppu {
                         self.chr_ram[offset] = data;
                     } else if self.mapper == 4 {
                         let offset = self.mmc3_chr_addr(addr);
+                        let len = self.chr_ram.len();
+                        if len > 0 {
+                            self.chr_ram[offset % len] = data;
+                        }
+                    } else if self.mapper == 21 || self.mapper == 23 || self.mapper == 25 {
+                        let offset = self.vrc4_chr_addr(addr);
                         let len = self.chr_ram.len();
                         if len > 0 {
                             self.chr_ram[offset % len] = data;
@@ -678,6 +694,17 @@ impl Ppu {
         if self.mmc3_irq_counter == 0 && self.mmc3_irq_enabled {
             self.mmc3_irq_pending = true;
         }
+    }
+
+    // ── VRC4 (Mapper 21/23/25) ───────────────────────────────────────
+
+    /// Compute physical CHR address for VRC4 bank mapping.
+    /// Eight 1KB CHR bank registers.
+    fn vrc4_chr_addr(&self, addr: u16) -> usize {
+        let addr = addr as usize & 0x1FFF;
+        let bank_idx = addr / 0x0400; // 0..7 (1KB banks)
+        let bank = self.vrc4_chr_banks[bank_idx] as usize;
+        bank * 0x0400 + (addr & 0x03FF)
     }
 
     // Scrolling Helpers

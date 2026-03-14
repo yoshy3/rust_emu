@@ -158,6 +158,13 @@ impl Nes {
 
         self.bus.tick_apu(cycles as u16);
 
+        // VRC4 IRQ: clock once per CPU cycle
+        if self.bus.mapper == 21 || self.bus.mapper == 23 || self.bus.mapper == 25 {
+            for _ in 0..cycles {
+                self.bus.clock_vrc4_irq();
+            }
+        }
+
         let mut total_cycles = cycles as usize;
 
         // NMI is checked via the persistent nmi_interrupt flag, which is set
@@ -191,6 +198,17 @@ impl Nes {
             self.bus.ppu_cycles_advanced = 0;
             self.cpu.irq(&mut self.bus);
             self.bus.ppu.mmc3_irq_pending = false;
+            let irq_ppu_remaining = (7u16 * 3).saturating_sub(self.bus.ppu_cycles_advanced);
+            self.bus.ppu.tick(irq_ppu_remaining);
+            self.bus.tick_apu(7);
+            total_cycles += 7;
+        }
+
+        // Handle IRQ from VRC4 counter
+        if self.bus.vrc4_irq_pending && (self.cpu.st & 0x04) == 0 {
+            self.bus.ppu_cycles_advanced = 0;
+            self.cpu.irq(&mut self.bus);
+            self.bus.vrc4_irq_pending = false;
             let irq_ppu_remaining = (7u16 * 3).saturating_sub(self.bus.ppu_cycles_advanced);
             self.bus.ppu.tick(irq_ppu_remaining);
             self.bus.tick_apu(7);
