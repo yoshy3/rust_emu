@@ -4,8 +4,8 @@
 //   https://www.nesdev.org/wiki/APU
 
 const LENGTH_TABLE: [u8; 32] = [
-    10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14,
-    12, 16, 24, 18, 48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30,
+    10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14, 12, 16, 24, 18, 48, 20, 96, 22,
+    192, 24, 72, 26, 16, 28, 32, 30,
 ];
 
 const DUTY_TABLE: [[u8; 8]; 4] = [
@@ -16,8 +16,8 @@ const DUTY_TABLE: [[u8; 8]; 4] = [
 ];
 
 const TRIANGLE_SEQUENCE: [u8; 32] = [
-    15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
-     0,  1,  2,  3,  4,  5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    13, 14, 15,
 ];
 
 const NOISE_PERIOD_TABLE: [u16; 16] = [
@@ -423,8 +423,7 @@ impl Apu {
                 self.pulse1.sweep.reload = true;
             }
             0x4002 => {
-                self.pulse1.timer_period =
-                    (self.pulse1.timer_period & 0x0700) | data as u16;
+                self.pulse1.timer_period = (self.pulse1.timer_period & 0x0700) | data as u16;
             }
             0x4003 => {
                 self.pulse1.timer_period =
@@ -451,8 +450,7 @@ impl Apu {
                 self.pulse2.sweep.reload = true;
             }
             0x4006 => {
-                self.pulse2.timer_period =
-                    (self.pulse2.timer_period & 0x0700) | data as u16;
+                self.pulse2.timer_period = (self.pulse2.timer_period & 0x0700) | data as u16;
             }
             0x4007 => {
                 self.pulse2.timer_period =
@@ -469,8 +467,7 @@ impl Apu {
                 self.triangle.linear_reload_value = data & 0x7F;
             }
             0x400A => {
-                self.triangle.timer_period =
-                    (self.triangle.timer_period & 0x0700) | data as u16;
+                self.triangle.timer_period = (self.triangle.timer_period & 0x0700) | data as u16;
             }
             0x400B => {
                 self.triangle.timer_period =

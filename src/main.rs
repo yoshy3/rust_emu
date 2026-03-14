@@ -32,8 +32,8 @@ fn write_wav_file(path: &str, sample_rate: u32, samples: &[(f32, f32)]) -> std::
 
     // fmt chunk (IEEE float = format tag 3)
     f.write_all(b"fmt ")?;
-    f.write_all(&16u32.to_le_bytes())?;       // chunk size
-    f.write_all(&3u16.to_le_bytes())?;        // format: IEEE float
+    f.write_all(&16u32.to_le_bytes())?; // chunk size
+    f.write_all(&3u16.to_le_bytes())?; // format: IEEE float
     f.write_all(&num_channels.to_le_bytes())?;
     f.write_all(&sample_rate.to_le_bytes())?;
     f.write_all(&byte_rate.to_le_bytes())?;
@@ -48,10 +48,12 @@ fn write_wav_file(path: &str, sample_rate: u32, samples: &[(f32, f32)]) -> std::
         f.write_all(&right.to_le_bytes())?;
     }
 
-    println!("[WAV] Wrote {} samples ({:.1}s) to {}",
+    println!(
+        "[WAV] Wrote {} samples ({:.1}s) to {}",
         samples.len(),
         samples.len() as f64 / sample_rate as f64,
-        path);
+        path
+    );
     Ok(())
 }
 
@@ -95,8 +97,8 @@ fn main() -> Result<()> {
     let mut apu_solo: u8 = 0;
     let mut wav_dump_path: Option<String> = None;
     let mut lpf_cutoff: f32 = 14000.0; // default LPF cutoff frequency (Hz)
-    let mut hpf1_cutoff: f32 = 90.0;    // default HPF stage 1 (DC blocking)
-    let mut hpf2_cutoff: f32 = 150.0;   // default HPF stage 2
+    let mut hpf1_cutoff: f32 = 90.0; // default HPF stage 1 (DC blocking)
+    let mut hpf2_cutoff: f32 = 440.0; // default HPF stage 2 (nesdev wiki: 440 Hz)
     for arg in args.iter().skip(1) {
         if arg == "--trace" {
             tracing = true;
@@ -133,7 +135,10 @@ fn main() -> Result<()> {
             rom_path = Some(PathBuf::from(arg));
         }
     }
-    println!("[Audio] LPF: {} Hz, HPF: {} / {} Hz", lpf_cutoff, hpf1_cutoff, hpf2_cutoff);
+    println!(
+        "[Audio] LPF: {} Hz, HPF: {} / {} Hz",
+        lpf_cutoff, hpf1_cutoff, hpf2_cutoff
+    );
 
     let rom_data = if let Some(path) = rom_path.as_ref() {
         std::fs::read(path).map_err(Error::msg)?
@@ -227,7 +232,10 @@ fn main() -> Result<()> {
     let mut wav_samples: Vec<(f32, f32)> = Vec::new();
     let wav_enabled = wav_dump_path.is_some();
     if wav_enabled {
-        println!("[WAV] Capture enabled → {}", wav_dump_path.as_deref().unwrap());
+        println!(
+            "[WAV] Capture enabled → {}",
+            wav_dump_path.as_deref().unwrap()
+        );
     }
 
     if tracing {

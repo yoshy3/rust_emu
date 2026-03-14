@@ -56,7 +56,7 @@ pub struct Nes {
     audio_samples_needed: f64,
     apu_sum: f32,
     apu_count: u32,
-    // NES hardware audio filter chain state (HP 90Hz → HP 440Hz → LP 14kHz ×2)
+    // NES hardware audio filter chain state (LP 14kHz ×2 → HP 90Hz → HP 440Hz)
     hp1_prev_in: f32,
     hp1_prev_out: f32,
     hp2_prev_in: f32,
@@ -148,6 +148,7 @@ impl Nes {
 
     pub fn tick(&mut self) -> usize {
         self.bus.ppu_cycles_advanced = 0;
+        self.bus.apu.reset_accumulator();
         let cycles = self.cpu.step(&mut self.bus);
 
         // PPU catch-up: the PPU was partially advanced during bus.read()/write() calls.
@@ -232,8 +233,8 @@ impl Nes {
                 self.hp1_prev_in = lp2;
                 self.hp1_prev_out = hp1;
 
-                // Stage 4: High-pass ~150 Hz
-                let k2 = 1.0 / (1.0 + std::f32::consts::TAU * 150.0 / fs);
+                // Stage 4: High-pass ~440 Hz
+                let k2 = 1.0 / (1.0 + std::f32::consts::TAU * 440.0 / fs);
                 let hp2 = k2 * (self.hp2_prev_out + hp1 - self.hp2_prev_in);
                 self.hp2_prev_in = hp1;
                 self.hp2_prev_out = hp2;
