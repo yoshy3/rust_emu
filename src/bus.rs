@@ -27,6 +27,16 @@ pub struct Bus {
     pub mmc3_bank_select: u8,
     pub mmc3_bank_data: [u8; 8],
     pub mmc3_prg_ram_protect: u8,
+    // VRC4 (Mapper 21/23/25) state
+    pub vrc4_prg_bank0: u8,
+    pub vrc4_prg_bank1: u8,
+    pub vrc4_prg_swap: bool,
+    pub vrc4_chr_banks: [u16; 8],
+    pub vrc4_irq_latch: u8,
+    pub vrc4_irq_control: u8,
+    pub vrc4_irq_counter: u8,
+    pub vrc4_irq_prescaler: i16,
+    pub vrc4_irq_pending: bool,
     /// Tracks how many PPU cycles have been "caught up" during the current CPU instruction.
     /// This is used to simulate parallel CPU/PPU execution: the PPU advances 3 cycles
     /// for every CPU memory access, so register reads see the correct PPU state.
@@ -62,6 +72,15 @@ impl Bus {
             mmc3_bank_select: 0,
             mmc3_bank_data: [0; 8],
             mmc3_prg_ram_protect: 0x80, // PRG RAM enabled by default
+            vrc4_prg_bank0: 0,
+            vrc4_prg_bank1: 0,
+            vrc4_prg_swap: false,
+            vrc4_chr_banks: [0; 8],
+            vrc4_irq_latch: 0,
+            vrc4_irq_control: 0,
+            vrc4_irq_counter: 0,
+            vrc4_irq_prescaler: 341,
+            vrc4_irq_pending: false,
             ppu_cycles_advanced: 0,
         };
         bus.sync_mmc1_state_to_ppu();
@@ -146,6 +165,8 @@ impl Bus {
                     self.write_mmc1(addr, data);
                 } else if self.mapper == 4 {
                     self.write_mmc3(addr, data);
+                } else if self.mapper == 21 || self.mapper == 23 || self.mapper == 25 {
+                    self.write_vrc4(addr, data);
                 }
             }
             _ => {}
@@ -187,6 +208,17 @@ impl Bus {
         self.ppu.mmc3_irq_reload = false;
         self.ppu.mmc3_irq_enabled = false;
         self.ppu.mmc3_irq_pending = false;
+        // VRC4
+        self.vrc4_prg_bank0 = 0;
+        self.vrc4_prg_bank1 = 0;
+        self.vrc4_prg_swap = false;
+        self.vrc4_chr_banks = [0; 8];
+        self.vrc4_irq_latch = 0;
+        self.vrc4_irq_control = 0;
+        self.vrc4_irq_counter = 0;
+        self.vrc4_irq_prescaler = 341;
+        self.vrc4_irq_pending = false;
+        self.ppu.vrc4_chr_banks = [0; 8];
     }
 
     pub fn set_mmc1_debug(&mut self, enabled: bool) {
@@ -261,6 +293,10 @@ impl Bus {
 
         if self.mapper == 4 {
             return self.read_prg_rom_mmc3(addr as usize);
+        }
+
+        if self.mapper == 21 || self.mapper == 23 || self.mapper == 25 {
+            return self.read_prg_rom_vrc4(addr as usize);
         }
 
         if self.mapper == 2 {
@@ -470,6 +506,162 @@ impl Bus {
         }
         self.ppu.mmc3_bank_select = self.mmc3_bank_select;
         self.ppu.mmc3_bank_data = self.mmc3_bank_data;
+    }
+
+    // ── VRC4 (Mapper 21/23/25) ───────────────────────────────────────
+
+    /// Translate the raw CPU address into a canonical VRC4 register address.
+    /// Different mapper numbers use different address lines for the low 2 bits.
+    fn vrc4_translate_addr(&self, addr: u16) -> u16 {
+        let base = addr & 0xF000;
+        let bits = match self.mapper {
+            // Mapper 21 — VRC4a: A1,A2 → bits 0,1
+            21 => ((addr >> 1) & 0x01) | ((addr >> 1) & 0x02),
+            // Mapper 23 — VRC4e/f: A0,A1 → bits 0,1 (identity for lowest bits)
+            23 => addr & 0x03,
+            // Mapper 25 — VRC4b: A0→bit1, A1→bit0 (swapped)
+            25 => ((addr & 0x01) << 1) | ((addr >> 1) & 0x01),
+            _ => addr & 0x03,
+        };
+        base | bits
+    }
+
+    fn write_vrc4(&mut self, addr: u16, data: u8) {
+        let reg = self.vrc4_translate_addr(addr);
+        match reg {
+            // $8000-$8003: PRG bank 0 select
+            0x8000..=0x8003 => {
+                self.vrc4_prg_bank0 = data & 0x1F;
+            }
+            // $9000/$9001: Mirroring control
+            0x9000 | 0x9001 => {
+                if self.ppu.mirroring != Mirroring::FourScreen {
+                    self.ppu.mirroring = match data & 0x03 {
+                        0 => Mirroring::Vertical,
+                        1 => Mirroring::Horizontal,
+                        2 => Mirroring::OneScreenLower,
+                        _ => Mirroring::OneScreenUpper,
+                    };
+                }
+            }
+            // $9002/$9003: PRG swap mode
+            0x9002 | 0x9003 => {
+                self.vrc4_prg_swap = (data & 0x02) != 0;
+            }
+            // $A000-$A003: PRG bank 1 select
+            0xA000..=0xA003 => {
+                self.vrc4_prg_bank1 = data & 0x1F;
+            }
+            // $B000-$E003: CHR bank selects (low/high nibble pairs)
+            0xB000..=0xE003 => {
+                let offset = (reg - 0xB000) as usize;
+                let bank_idx = offset / 0x1000 * 2 + (offset & 0x03) / 2;
+                if bank_idx < 8 {
+                    if (offset & 0x03) & 1 == 0 {
+                        // Low nibble
+                        self.vrc4_chr_banks[bank_idx] =
+                            (self.vrc4_chr_banks[bank_idx] & 0x1F0) | (data as u16 & 0x0F);
+                    } else {
+                        // High nibble
+                        self.vrc4_chr_banks[bank_idx] =
+                            (self.vrc4_chr_banks[bank_idx] & 0x00F) | ((data as u16 & 0x1F) << 4);
+                    }
+                    self.ppu.vrc4_chr_banks = self.vrc4_chr_banks;
+                }
+            }
+            // $F000: IRQ latch low
+            0xF000 => {
+                self.vrc4_irq_latch = (self.vrc4_irq_latch & 0xF0) | (data & 0x0F);
+            }
+            // $F001: IRQ latch high
+            0xF001 => {
+                self.vrc4_irq_latch = (self.vrc4_irq_latch & 0x0F) | ((data & 0x0F) << 4);
+            }
+            // $F002: IRQ control
+            0xF002 => {
+                self.vrc4_irq_control = data & 0x07;
+                if (data & 0x02) != 0 {
+                    // IRQ enable — reload counter and prescaler
+                    self.vrc4_irq_counter = self.vrc4_irq_latch;
+                    self.vrc4_irq_prescaler = 341;
+                }
+                self.vrc4_irq_pending = false;
+            }
+            // $F003: IRQ acknowledge
+            0xF003 => {
+                self.vrc4_irq_pending = false;
+                // Restore enable bit from control bit 0
+                self.vrc4_irq_control =
+                    (self.vrc4_irq_control & 0x05) | ((self.vrc4_irq_control & 0x01) << 1);
+            }
+            _ => {}
+        }
+    }
+
+    /// Clock VRC4 IRQ counter. Called once per CPU cycle.
+    pub fn clock_vrc4_irq(&mut self) {
+        if (self.vrc4_irq_control & 0x02) == 0 {
+            return;
+        }
+
+        if (self.vrc4_irq_control & 0x04) != 0 {
+            // Cycle mode: increment every CPU cycle
+            if self.vrc4_irq_counter == 0xFF {
+                self.vrc4_irq_counter = self.vrc4_irq_latch;
+                self.vrc4_irq_pending = true;
+            } else {
+                self.vrc4_irq_counter += 1;
+            }
+        } else {
+            // Scanline mode: prescaler-based (~114.33 CPU cycles per scanline)
+            self.vrc4_irq_prescaler -= 3;
+            if self.vrc4_irq_prescaler <= 0 {
+                self.vrc4_irq_prescaler += 341;
+                if self.vrc4_irq_counter == 0xFF {
+                    self.vrc4_irq_counter = self.vrc4_irq_latch;
+                    self.vrc4_irq_pending = true;
+                } else {
+                    self.vrc4_irq_counter += 1;
+                }
+            }
+        }
+    }
+
+    fn read_prg_rom_vrc4(&self, addr: usize) -> u8 {
+        if self.prg_rom.is_empty() {
+            return 0;
+        }
+        let bank_8k = 0x2000usize;
+        let num_8k_banks = (self.prg_rom.len() / bank_8k).max(1);
+        let second_last = num_8k_banks.wrapping_sub(2) % num_8k_banks;
+        let last = num_8k_banks - 1;
+
+        let (b0, b1, b2, b3) = if !self.vrc4_prg_swap {
+            // Normal: $8000=bank0, $A000=bank1, $C000=(-2), $E000=(-1)
+            (
+                self.vrc4_prg_bank0 as usize % num_8k_banks,
+                self.vrc4_prg_bank1 as usize % num_8k_banks,
+                second_last,
+                last,
+            )
+        } else {
+            // Swapped: $8000=(-2), $A000=bank1, $C000=bank0, $E000=(-1)
+            (
+                second_last,
+                self.vrc4_prg_bank1 as usize % num_8k_banks,
+                self.vrc4_prg_bank0 as usize % num_8k_banks,
+                last,
+            )
+        };
+
+        let bank = match addr {
+            0x0000..=0x1FFF => b0,
+            0x2000..=0x3FFF => b1,
+            0x4000..=0x5FFF => b2,
+            _ => b3,
+        };
+        let offset = bank * bank_8k + (addr & 0x1FFF);
+        self.prg_rom[offset % self.prg_rom.len()]
     }
 
     fn read_prg_rom_mmc1(&self, addr: usize) -> u8 {
