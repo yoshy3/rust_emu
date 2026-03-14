@@ -240,6 +240,7 @@ impl Bus {
     }
 
     pub fn tick_apu(&mut self, cycles: u16) {
+        self.apu.reset_accumulator();
         for _ in 0..cycles {
             if self.apu.dmc_needs_fetch() {
                 let addr = self.apu.dmc_fetch_address();

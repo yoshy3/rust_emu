@@ -100,6 +100,17 @@ pub struct Apu {
     frame_counter_cycle: u32,
     irq_inhibit: bool,
     irq_pending: bool,
+
+    // Per-cycle output accumulation for proper oversampling
+    accumulated_output: f32,
+    accumulated_cycles: u32,
+
+    // Transition smoother: short EMA to soften abrupt level changes
+    // (e.g., frequency register writes causing waveform discontinuities)
+    smoothed_output: f32,
+
+    // Debug: channel solo (0=all, 1=pulse1, 2=pulse2, 3=triangle, 4=noise, 5=dmc)
+    pub solo_channel: u8,
 }
 
 impl Apu {
@@ -186,6 +197,10 @@ impl Apu {
             frame_counter_cycle: 0,
             irq_inhibit: true,
             irq_pending: false,
+            accumulated_output: 0.0,
+            accumulated_cycles: 0,
+            smoothed_output: 0.0,
+            solo_channel: 0,
         }
     }
 
@@ -217,7 +232,9 @@ impl Apu {
                 if self.pulse1_enabled {
                     self.pulse1_length_counter = LENGTH_TABLE[(data >> 3) as usize];
                 }
-                self.pulse1_duty_pos = 0; // Restart sequence
+                // Note: Real HW resets duty_pos to 0 here, but this causes
+                // audible click noise on every pitch change. Omitting the reset
+                // is a common quality-of-life improvement in emulators.
                 self.pulse1_env_start = true; // Reset envelope
             }
             0x4004 => {
@@ -246,7 +263,9 @@ impl Apu {
                 if self.pulse2_enabled {
                     self.pulse2_length_counter = LENGTH_TABLE[(data >> 3) as usize];
                 }
-                self.pulse2_duty_pos = 0; // Restart sequence
+                // Note: Real HW resets duty_pos to 0 here, but this causes
+                // audible click noise on every pitch change. Omitting the reset
+                // is a common quality-of-life improvement in emulators.
                 self.pulse2_env_start = true; // Reset envelope
             }
             0x4008 => {
@@ -386,6 +405,7 @@ impl Apu {
     pub fn output(&self) -> f32 {
         // Sweep mute: period < 8 always mutes; target > $7FF only mutes when NOT negating
         // (negate mode subtracts, so overflow into bit 11 cannot occur)
+        let solo = self.solo_channel;
         let p1_mute = self.pulse1_timer_period < 8
             || (!self.pulse1_sweep_negate && self.pulse1_target_period() > 0x7FF);
         let p1 = if self.pulse1_length_counter > 0 && !p1_mute {
@@ -431,14 +451,34 @@ impl Apu {
         };
 
         let pulse_out = if p1 + p2 > 0 {
-            95.88 / (8128.0 / (p1 as f32 + p2 as f32) + 100.0)
+            let p1_s = if solo == 0 || solo == 1 {
+                p1 as f32
+            } else {
+                0.0
+            };
+            let p2_s = if solo == 0 || solo == 2 {
+                p2 as f32
+            } else {
+                0.0
+            };
+            if p1_s + p2_s > 0.0 {
+                95.88 / (8128.0 / (p1_s + p2_s) + 100.0)
+            } else {
+                0.0
+            }
         } else {
             0.0
         };
 
         // Triangle
         let t = if self.triangle_length_counter > 0 && self.triangle_linear_counter > 0 {
-            TRIANGLE_TABLE[self.triangle_step as usize] as f32
+            if self.triangle_timer_period < 2 {
+                // Ultrasonic: on real hardware the DAC output averages to ~7.5,
+                // which becomes silence after the high-pass filters.
+                7.5
+            } else {
+                TRIANGLE_TABLE[self.triangle_step as usize] as f32
+            }
         } else {
             0.0
         };
@@ -456,8 +496,12 @@ impl Apu {
 
         let d = self.dmc_output_level as f32;
 
-        let tnd_out = if t + n + d > 0.0 {
-            159.79 / (1.0 / (t / 8227.0 + n / 12241.0 + d / 22638.0) + 100.0)
+        let t_s = if solo == 0 || solo == 3 { t } else { 0.0 };
+        let n_s = if solo == 0 || solo == 4 { n } else { 0.0 };
+        let d_s = if solo == 0 || solo == 5 { d } else { 0.0 };
+
+        let tnd_out = if t_s + n_s + d_s > 0.0 {
+            159.79 / (1.0 / (t_s / 8227.0 + n_s / 12241.0 + d_s / 22638.0) + 100.0)
         } else {
             0.0
         };
@@ -566,6 +610,16 @@ impl Apu {
                     _ => {}
                 }
             }
+
+            // Per-cycle output accumulation for proper oversampling
+            // Apply short EMA smoother (α ≈ 0.08, ~12 CPU cycle time-constant ≈ 6.7µs)
+            // to eliminate discontinuities from frequency register writes while
+            // preserving normal waveform shape at audio frequencies.
+            let raw = self.output();
+            let alpha = 0.08_f32;
+            self.smoothed_output += alpha * (raw - self.smoothed_output);
+            self.accumulated_output += self.smoothed_output;
+            self.accumulated_cycles += 1;
         }
     }
 
@@ -759,5 +813,22 @@ impl Apu {
 
     pub fn is_irq_pending(&self) -> bool {
         self.irq_pending || self.dmc_irq_pending
+    }
+
+    /// Reset the per-cycle output accumulator. Called before each batch of APU ticks.
+    pub fn reset_accumulator(&mut self) {
+        self.accumulated_output = 0.0;
+        self.accumulated_cycles = 0;
+    }
+
+    /// Return the per-cycle averaged output from the last tick() batch.
+    /// This provides proper oversampling: every APU cycle's output is captured,
+    /// not just a single point-sample after the batch.
+    pub fn averaged_output(&self) -> f32 {
+        if self.accumulated_cycles > 0 {
+            self.accumulated_output / self.accumulated_cycles as f32
+        } else {
+            self.output()
+        }
     }
 }
