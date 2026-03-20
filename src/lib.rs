@@ -54,18 +54,52 @@ pub struct Nes {
     pub audio_samples: Vec<f32>,
     pub audio_sample_rate: f32,
     audio_samples_needed: f64,
-    apu_sum: f32,
-    apu_count: u32,
-    // NES hardware audio filter chain state (HP 90Hz → HP 440Hz → LP 14kHz ×2)
+    // NES hardware audio filter chain state (HP 90Hz -> HP 440Hz -> LP 14kHz)
     hp1_prev_in: f32,
     hp1_prev_out: f32,
     hp2_prev_in: f32,
     hp2_prev_out: f32,
     lp1_prev_out: f32,
-    lp2_prev_out: f32,
 }
 
 impl Nes {
+    fn filter_audio_sample(&mut self, raw: f32) -> f32 {
+        // NES hardware audio filter chain: HP 90Hz -> HP 440Hz -> LP 14kHz
+        let fs = self.audio_sample_rate;
+
+        let k1 = 1.0 / (1.0 + std::f32::consts::TAU * 90.0 / fs);
+        let hp1 = k1 * (self.hp1_prev_out + raw - self.hp1_prev_in);
+        self.hp1_prev_in = raw;
+        self.hp1_prev_out = hp1;
+
+        let k2 = 1.0 / (1.0 + std::f32::consts::TAU * 440.0 / fs);
+        let hp2 = k2 * (self.hp2_prev_out + hp1 - self.hp2_prev_in);
+        self.hp2_prev_in = hp1;
+        self.hp2_prev_out = hp2;
+
+        let k_lp = std::f32::consts::TAU * 14000.0 / fs;
+        let a_lp = k_lp / (1.0 + k_lp);
+        let lp = a_lp * hp2 + (1.0 - a_lp) * self.lp1_prev_out;
+        self.lp1_prev_out = lp;
+        lp
+    }
+
+    fn clock_apu_audio(&mut self, cycles: u16) {
+        let samples_per_cpu_cycle = self.audio_sample_rate as f64 / 1_789_773.0;
+        for _ in 0..cycles {
+            self.bus.tick_apu(1);
+            let raw = self.bus.apu.averaged_output();
+            self.audio_samples_needed += samples_per_cpu_cycle;
+            while self.audio_samples_needed >= 1.0 {
+                let filtered = self.filter_audio_sample(raw);
+                if self.audio_samples.len() < 8192 {
+                    self.audio_samples.push(filtered);
+                }
+                self.audio_samples_needed -= 1.0;
+            }
+        }
+    }
+
     pub fn new_with_rom(rom_data: &[u8]) -> Self {
         let rom = crate::cartridge::Rom::new(&rom_data.to_vec()).unwrap();
         let mut ppu = Ppu::new(rom.screen_mirroring, rom.chr_rom);
@@ -84,14 +118,11 @@ impl Nes {
             audio_samples: Vec::with_capacity(4096),
             audio_sample_rate: 44100.0,
             audio_samples_needed: 0.0,
-            apu_sum: 0.0,
-            apu_count: 0,
             hp1_prev_in: 0.0,
             hp1_prev_out: 0.0,
             hp2_prev_in: 0.0,
             hp2_prev_out: 0.0,
             lp1_prev_out: 0.0,
-            lp2_prev_out: 0.0,
         }
     }
 
@@ -156,7 +187,7 @@ impl Nes {
         let remaining = total_ppu_cycles.saturating_sub(self.bus.ppu_cycles_advanced);
         self.bus.ppu.tick(remaining);
 
-        self.bus.tick_apu(cycles as u16);
+        self.clock_apu_audio(cycles as u16);
 
         // VRC4 IRQ: clock once per CPU cycle
         if self.bus.mapper == 21 || self.bus.mapper == 23 || self.bus.mapper == 25 {
@@ -176,7 +207,7 @@ impl Nes {
             self.bus.ppu.nmi_interrupt = false;
             let nmi_ppu_remaining = (7u16 * 3).saturating_sub(self.bus.ppu_cycles_advanced);
             self.bus.ppu.tick(nmi_ppu_remaining);
-            self.bus.tick_apu(7);
+            self.clock_apu_audio(7);
             total_cycles += 7;
         }
 
@@ -188,7 +219,7 @@ impl Nes {
             self.cpu.irq(&mut self.bus);
             let irq_ppu_remaining = (7u16 * 3).saturating_sub(self.bus.ppu_cycles_advanced);
             self.bus.ppu.tick(irq_ppu_remaining);
-            self.bus.tick_apu(7);
+            self.clock_apu_audio(7);
             total_cycles += 7;
         }
 
@@ -200,7 +231,7 @@ impl Nes {
             self.bus.ppu.mmc3_irq_pending = false;
             let irq_ppu_remaining = (7u16 * 3).saturating_sub(self.bus.ppu_cycles_advanced);
             self.bus.ppu.tick(irq_ppu_remaining);
-            self.bus.tick_apu(7);
+            self.clock_apu_audio(7);
             total_cycles += 7;
         }
 
@@ -211,62 +242,8 @@ impl Nes {
             self.bus.vrc4_irq_pending = false;
             let irq_ppu_remaining = (7u16 * 3).saturating_sub(self.bus.ppu_cycles_advanced);
             self.bus.ppu.tick(irq_ppu_remaining);
-            self.bus.tick_apu(7);
+            self.clock_apu_audio(7);
             total_cycles += 7;
-        }
-
-        // Audio logic
-        let step_cycles = total_cycles as u32;
-        let current_output = self.bus.apu.averaged_output();
-        self.apu_sum += current_output * step_cycles as f32;
-        self.apu_count += step_cycles;
-
-        self.audio_samples_needed +=
-            step_cycles as f64 * (self.audio_sample_rate as f64 / 1789773.0);
-        if self.audio_samples_needed >= 1.0 {
-            let num_samples = self.audio_samples_needed as i32;
-            for _ in 0..num_samples {
-                let raw = if self.apu_count > 0 {
-                    self.apu_sum / self.apu_count as f32
-                } else {
-                    current_output
-                };
-
-                // NES hardware audio filter chain
-                // LPF first to smooth transients before HPF can amplify them
-                let fs = self.audio_sample_rate;
-
-                // Stage 1-2: Low-pass ~14 kHz (2nd-order cascaded for 12dB/oct)
-                let k_lp = std::f32::consts::TAU * 14000.0 / fs;
-                let a_lp = k_lp / (1.0 + k_lp);
-                let lp1 = a_lp * raw + (1.0 - a_lp) * self.lp1_prev_out;
-                self.lp1_prev_out = lp1;
-                let lp2 = a_lp * lp1 + (1.0 - a_lp) * self.lp2_prev_out;
-                self.lp2_prev_out = lp2;
-
-                // Stage 3: High-pass ~90 Hz (DC blocking / coupling capacitor)
-                let k1 = 1.0 / (1.0 + std::f32::consts::TAU * 90.0 / fs);
-                let hp1 = k1 * (self.hp1_prev_out + lp2 - self.hp1_prev_in);
-                self.hp1_prev_in = lp2;
-                self.hp1_prev_out = hp1;
-
-                // Stage 4: High-pass ~150 Hz
-                let k2 = 1.0 / (1.0 + std::f32::consts::TAU * 150.0 / fs);
-                let hp2 = k2 * (self.hp2_prev_out + hp1 - self.hp2_prev_in);
-                self.hp2_prev_in = hp1;
-                self.hp2_prev_out = hp2;
-
-                // Cap buffer size to avoid memory leaks if JS doesn't consume
-                if self.audio_samples.len() < 8192 {
-                    self.audio_samples.push(hp2);
-                }
-            }
-
-            if num_samples > 0 {
-                self.apu_sum = 0.0;
-                self.apu_count = 0;
-            }
-            self.audio_samples_needed -= num_samples as f64;
         }
 
         total_cycles
@@ -297,3 +274,5 @@ impl Nes {
         self.set_joypad_button(btn, status);
     }
 }
+
+

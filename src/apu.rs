@@ -63,6 +63,7 @@ pub struct Apu {
     triangle_linear_control: bool,
     triangle_linear_reload: bool,
     triangle_step: u8,
+    triangle_output_level: f32,
 
     // Noise
     noise_enabled: bool,
@@ -100,6 +101,11 @@ pub struct Apu {
     frame_counter_cycle: u32,
     irq_inhibit: bool,
     irq_pending: bool,
+    frame_counter_reset_delay: u8,
+    frame_counter_reset_clock: bool,
+    // Pulse/noise timers run on every other CPU cycle, but that divider is
+    // independent from the frame counter and must not be reset by $4017.
+    pulse_noise_cycle: u8,
 
     // Per-cycle output accumulation for proper oversampling
     accumulated_output: f32,
@@ -163,6 +169,7 @@ impl Apu {
             triangle_linear_control: false,
             triangle_linear_reload: false,
             triangle_step: 0,
+            triangle_output_level: 0.0,
 
             noise_enabled: false,
             noise_length_counter: 0,
@@ -197,6 +204,9 @@ impl Apu {
             frame_counter_cycle: 0,
             irq_inhibit: true,
             irq_pending: false,
+            frame_counter_reset_delay: 0,
+            frame_counter_reset_clock: false,
+            pulse_noise_cycle: 0,
             accumulated_output: 0.0,
             accumulated_cycles: 0,
             smoothed_output: 0.0,
@@ -232,9 +242,8 @@ impl Apu {
                 if self.pulse1_enabled {
                     self.pulse1_length_counter = LENGTH_TABLE[(data >> 3) as usize];
                 }
-                // Note: Real HW resets duty_pos to 0 here, but this causes
-                // audible click noise on every pitch change. Omitting the reset
-                // is a common quality-of-life improvement in emulators.
+                self.pulse1_timer = self.pulse1_timer_period;
+                self.pulse1_duty_pos = 0;
                 self.pulse1_env_start = true; // Reset envelope
             }
             0x4004 => {
@@ -263,9 +272,8 @@ impl Apu {
                 if self.pulse2_enabled {
                     self.pulse2_length_counter = LENGTH_TABLE[(data >> 3) as usize];
                 }
-                // Note: Real HW resets duty_pos to 0 here, but this causes
-                // audible click noise on every pitch change. Omitting the reset
-                // is a common quality-of-life improvement in emulators.
+                self.pulse2_timer = self.pulse2_timer_period;
+                self.pulse2_duty_pos = 0;
                 self.pulse2_env_start = true; // Reset envelope
             }
             0x4008 => {
@@ -359,13 +367,10 @@ impl Apu {
                 if self.irq_inhibit {
                     self.irq_pending = false;
                 }
-
-                self.frame_counter_cycle = 0;
-                // If 5-step mode, clock immediately
-                if self.frame_counter_mode == 1 {
-                    self.clock_envelopes();
-                    self.clock_length_counters();
-                }
+                // Writing $4017 resets the sequencer after a short delay.
+                // In 5-step mode the reset also clocks quarter/half-frame units.
+                self.frame_counter_reset_delay = 4;
+                self.frame_counter_reset_clock = self.frame_counter_mode == 1;
             }
             _ => {}
         }
@@ -471,17 +476,9 @@ impl Apu {
         };
 
         // Triangle
-        let t = if self.triangle_length_counter > 0 && self.triangle_linear_counter > 0 {
-            if self.triangle_timer_period < 2 {
-                // Ultrasonic: on real hardware the DAC output averages to ~7.5,
-                // which becomes silence after the high-pass filters.
-                7.5
-            } else {
-                TRIANGLE_TABLE[self.triangle_step as usize] as f32
-            }
-        } else {
-            0.0
-        };
+        // The triangle DAC holds its last level when the channel stops clocking;
+        // forcing it to 0 causes an audible discontinuity during register updates.
+        let t = self.triangle_output_level;
 
         // Noise
         let n = if self.noise_length_counter > 0 && (self.noise_shift_register & 1) == 0 {
@@ -511,6 +508,19 @@ impl Apu {
 
     pub fn tick(&mut self, cycles: u16) {
         for _ in 0..cycles {
+            if self.frame_counter_reset_delay > 0 {
+                self.frame_counter_reset_delay -= 1;
+                if self.frame_counter_reset_delay == 0 {
+                    self.frame_counter_cycle = 0;
+                    if self.frame_counter_reset_clock {
+                        self.clock_envelopes();
+                        self.clock_length_counters();
+                        self.clock_sweeps();
+                        self.frame_counter_reset_clock = false;
+                    }
+                }
+            }
+
             // Pulse and Noise timers decrement every 2 CPU cycles
             // For simplicity, we can use a cycle counter or just keep track in Apu.
             // Let's add a pulse_timer_phase or similar.
@@ -522,11 +532,19 @@ impl Apu {
                 self.triangle_timer = self.triangle_timer_period;
                 if self.triangle_length_counter > 0 && self.triangle_linear_counter > 0 {
                     self.triangle_step = (self.triangle_step + 1) & 0x1F;
+                    self.triangle_output_level = if self.triangle_timer_period < 2 {
+                        // Ultrasonic triangle averages around the midpoint.
+                        7.5
+                    } else {
+                        TRIANGLE_TABLE[self.triangle_step as usize] as f32
+                    };
                 }
             }
 
-            // Pulse 1, Pulse 2, Noise (every 2 cycles)
-            if self.frame_counter_cycle % 2 == 0 {
+            // Pulse 1, Pulse 2, Noise (every 2 CPU cycles).
+            // Keep this divider independent from the frame counter so $4017
+            // writes do not introduce a phase discontinuity.
+            if self.pulse_noise_cycle == 0 {
                 if self.pulse1_timer > 0 {
                     self.pulse1_timer -= 1;
                 } else {
@@ -557,12 +575,13 @@ impl Apu {
                     self.noise_shift_register |= feedback << 14;
                 }
             }
+            self.pulse_noise_cycle ^= 1;
 
             // DMC
             if self.dmc_timer > 0 {
                 self.dmc_timer -= 1;
             } else {
-                self.dmc_timer = self.dmc_timer_period;
+                self.dmc_timer = self.dmc_timer_period.saturating_sub(1);
                 self.clock_dmc();
             }
 
@@ -611,14 +630,12 @@ impl Apu {
                 }
             }
 
-            // Per-cycle output accumulation for proper oversampling
-            // Apply short EMA smoother (α ≈ 0.08, ~12 CPU cycle time-constant ≈ 6.7µs)
-            // to eliminate discontinuities from frequency register writes while
-            // preserving normal waveform shape at audio frequencies.
+            // Per-cycle output accumulation for proper oversampling.
+            // Keep the instantaneous mixed output here; extra temporal smoothing
+            // made short sound effects audibly muddy in real games.
             let raw = self.output();
-            let alpha = 0.08_f32;
-            self.smoothed_output += alpha * (raw - self.smoothed_output);
-            self.accumulated_output += self.smoothed_output;
+            self.smoothed_output = raw;
+            self.accumulated_output += raw;
             self.accumulated_cycles += 1;
         }
     }
@@ -831,4 +848,176 @@ impl Apu {
             self.output()
         }
     }
+
+    pub fn debug_mix_summary(&self) -> String {
+        let duty_table = [
+            [0, 1, 0, 0, 0, 0, 0, 0],
+            [0, 1, 1, 0, 0, 0, 0, 0],
+            [0, 1, 1, 1, 1, 0, 0, 0],
+            [1, 0, 0, 1, 1, 1, 1, 1],
+        ];
+        let p1_mute =
+            self.pulse1_timer_period < 8 || (!self.pulse1_sweep_negate && self.pulse1_target_period() > 0x7FF);
+        let p2_mute =
+            self.pulse2_timer_period < 8 || (!self.pulse2_sweep_negate && self.pulse2_target_period() > 0x7FF);
+        let p1 = if self.pulse1_length_counter > 0
+            && !p1_mute
+            && duty_table[self.pulse1_duty as usize][self.pulse1_duty_pos as usize] == 1
+        {
+            if self.pulse1_constant_volume {
+                self.pulse1_volume as f32
+            } else {
+                self.pulse1_env_decay as f32
+            }
+        } else {
+            0.0
+        };
+        let p2 = if self.pulse2_length_counter > 0
+            && !p2_mute
+            && duty_table[self.pulse2_duty as usize][self.pulse2_duty_pos as usize] == 1
+        {
+            if self.pulse2_constant_volume {
+                self.pulse2_volume as f32
+            } else {
+                self.pulse2_env_decay as f32
+            }
+        } else {
+            0.0
+        };
+        let n = if self.noise_length_counter > 0 && (self.noise_shift_register & 1) == 0 {
+            if self.noise_constant_volume {
+                self.noise_volume as f32
+            } else {
+                self.noise_env_decay as f32
+            }
+        } else {
+            0.0
+        };
+        format!(
+            "raw={:.5} smooth={:.5} avg={:.5} p1={:.1} p2={:.1} tri={:.1} noi={:.1} dmc={:.1} cyc={} p1len={} p2len={} trilen={} trictr={} tristp={} trival={:.1} noilen={} dmc_len={} dmc_lvl={} fc={} mode={}",
+            self.output(),
+            self.smoothed_output,
+            self.averaged_output(),
+            p1,
+            p2,
+            self.triangle_output_level,
+            n,
+            self.dmc_output_level as f32,
+            self.accumulated_cycles,
+            self.pulse1_length_counter,
+            self.pulse2_length_counter,
+            self.triangle_length_counter,
+            self.triangle_linear_counter,
+            self.triangle_step,
+            self.triangle_output_level,
+            self.noise_length_counter,
+            self.dmc_current_length,
+            self.dmc_output_level,
+            self.frame_counter_cycle,
+            self.frame_counter_mode,
+        )
+    }
+
+    pub fn debug_register_detail(&self) -> String {
+        let p1_out = self.debug_pulse_output(1);
+        let p2_out = self.debug_pulse_output(2);
+        format!(
+            "p1[duty={} pos={} tmr={} per={} len={} halt={} cvol={} vol={} env={} envdiv={} sw_en={} sw_per={} sw_neg={} sw_sh={} out={}] \
+p2[duty={} pos={} tmr={} per={} len={} halt={} cvol={} vol={} env={} envdiv={} sw_en={} sw_per={} sw_neg={} sw_sh={} out={}] \
+tri[en={} len={} lin={} reload={} ctrl={} step={} per={} tmr={} out={:.1}] \
+dmc[en={} len={} lvl={} buf={} bits={} silent={} per={} tmr={}]",
+            self.pulse1_duty,
+            self.pulse1_duty_pos,
+            self.pulse1_timer,
+            self.pulse1_timer_period,
+            self.pulse1_length_counter,
+            self.pulse1_envelope_loop as u8,
+            self.pulse1_constant_volume as u8,
+            self.pulse1_volume,
+            self.pulse1_env_decay,
+            self.pulse1_env_divider,
+            self.pulse1_sweep_enabled as u8,
+            self.pulse1_sweep_period,
+            self.pulse1_sweep_negate as u8,
+            self.pulse1_sweep_shift,
+            p1_out,
+            self.pulse2_duty,
+            self.pulse2_duty_pos,
+            self.pulse2_timer,
+            self.pulse2_timer_period,
+            self.pulse2_length_counter,
+            self.pulse2_envelope_loop as u8,
+            self.pulse2_constant_volume as u8,
+            self.pulse2_volume,
+            self.pulse2_env_decay,
+            self.pulse2_env_divider,
+            self.pulse2_sweep_enabled as u8,
+            self.pulse2_sweep_period,
+            self.pulse2_sweep_negate as u8,
+            self.pulse2_sweep_shift,
+            p2_out,
+            self.triangle_enabled as u8,
+            self.triangle_length_counter,
+            self.triangle_linear_counter,
+            self.triangle_linear_reload as u8,
+            self.triangle_linear_control as u8,
+            self.triangle_step,
+            self.triangle_timer_period,
+            self.triangle_timer,
+            self.triangle_output_level,
+            self.dmc_enabled as u8,
+            self.dmc_current_length,
+            self.dmc_output_level,
+            self.dmc_sample_buffer.is_some() as u8,
+            self.dmc_bits_remaining,
+            self.dmc_silent as u8,
+            self.dmc_timer_period,
+            self.dmc_timer,
+        )
+    }
+
+    fn debug_pulse_output(&self, channel: u8) -> u8 {
+        let duty_table = [
+            [0, 1, 0, 0, 0, 0, 0, 0],
+            [0, 1, 1, 0, 0, 0, 0, 0],
+            [0, 1, 1, 1, 1, 0, 0, 0],
+            [1, 0, 0, 1, 1, 1, 1, 1],
+        ];
+        match channel {
+            1 => {
+                let mute = self.pulse1_timer_period < 8
+                    || (!self.pulse1_sweep_negate && self.pulse1_target_period() > 0x7FF);
+                if self.pulse1_length_counter > 0
+                    && !mute
+                    && duty_table[self.pulse1_duty as usize][self.pulse1_duty_pos as usize] == 1
+                {
+                    if self.pulse1_constant_volume {
+                        self.pulse1_volume
+                    } else {
+                        self.pulse1_env_decay
+                    }
+                } else {
+                    0
+                }
+            }
+            2 => {
+                let mute = self.pulse2_timer_period < 8
+                    || (!self.pulse2_sweep_negate && self.pulse2_target_period() > 0x7FF);
+                if self.pulse2_length_counter > 0
+                    && !mute
+                    && duty_table[self.pulse2_duty as usize][self.pulse2_duty_pos as usize] == 1
+                {
+                    if self.pulse2_constant_volume {
+                        self.pulse2_volume
+                    } else {
+                        self.pulse2_env_decay
+                    }
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        }
+    }
 }
+

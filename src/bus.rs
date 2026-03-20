@@ -23,6 +23,7 @@ pub struct Bus {
     pub cpu_step_counter: u64,
     pub mmc1_last_write_step: Option<u64>,
     pub mmc1_debug: bool,
+    pub apu_debug: bool,
     // MMC3 (Mapper 4) state
     pub mmc3_bank_select: u8,
     pub mmc3_bank_data: [u8; 8],
@@ -48,6 +49,9 @@ impl Bus {
         let mmc1_debug = std::env::var("MMC1_LOG")
             .map(|value| value != "0" && !value.is_empty())
             .unwrap_or(false);
+        let apu_debug = std::env::var("APU_LOG")
+            .map(|value| value != "0" && !value.is_empty())
+            .unwrap_or(false);
 
         let mut bus = Self {
             cpu_vram: [0; 2048],
@@ -69,6 +73,7 @@ impl Bus {
             cpu_step_counter: 0,
             mmc1_last_write_step: None,
             mmc1_debug,
+            apu_debug,
             mmc3_bank_select: 0,
             mmc3_bank_data: [0; 8],
             mmc3_prg_ram_protect: 0x80, // PRG RAM enabled by default
@@ -151,7 +156,27 @@ impl Bus {
                 self.joypad1.write(data);
             }
             0x4000..=0x4013 | 0x4015 | 0x4017 => {
+                let before = if self.apu_debug {
+                    Some((self.apu.debug_mix_summary(), self.apu.debug_register_detail()))
+                } else {
+                    None
+                };
                 self.apu.write_register(addr, data);
+                if let Some(before) = before {
+                    let after = self.apu.debug_mix_summary();
+                    self.apu_log_write(addr, data, &before.0, &after);
+                    if matches!(addr, 0x4000 | 0x4003 | 0x4004 | 0x4007 | 0x4015) {
+                        let after_detail = self.apu.debug_register_detail();
+                        println!(
+                            "[APU-REG] step={} write ${:04X}=${:02X} before=[{}] after=[{}]",
+                            self.cycles,
+                            addr,
+                            data,
+                            before.1,
+                            after_detail
+                        );
+                    }
+                }
             }
             0x6000..=0x7FFF => {
                 self.write_prg_ram(addr, data);
@@ -277,6 +302,9 @@ impl Bus {
             if self.apu.dmc_needs_fetch() {
                 let addr = self.apu.dmc_fetch_address();
                 let data = self.read(addr);
+                if self.apu_debug {
+                    self.apu_log_dmc_fetch(addr, data);
+                }
                 self.apu.dmc_provide_sample(data);
                 self.cycles += 4;
             }
@@ -412,9 +440,9 @@ impl Bus {
                     // $8001 (odd): Bank data
                     let reg = (self.mmc3_bank_select & 0x07) as usize;
                     self.mmc3_bank_data[reg] = match reg {
-                        // R0, R1: 2KB CHR banks — ignore lowest bit
+                        // R0, R1: 2KB CHR banks  Eignore lowest bit
                         0 | 1 => data & 0xFE,
-                        // R6, R7: PRG banks — 6 bit only
+                        // R6, R7: PRG banks  E6 bit only
                         6 | 7 => data & 0x3F,
                         // R2-R5: 1KB CHR banks
                         _ => data,
@@ -515,11 +543,11 @@ impl Bus {
     fn vrc4_translate_addr(&self, addr: u16) -> u16 {
         let base = addr & 0xF000;
         let bits = match self.mapper {
-            // Mapper 21 — VRC4a: A1,A2 → bits 0,1
+            // Mapper 21  EVRC4a: A1,A2 ↁEbits 0,1
             21 => ((addr >> 1) & 0x01) | ((addr >> 1) & 0x02),
-            // Mapper 23 — VRC4e/f: A0,A1 → bits 0,1 (identity for lowest bits)
+            // Mapper 23  EVRC4e/f: A0,A1 ↁEbits 0,1 (identity for lowest bits)
             23 => addr & 0x03,
-            // Mapper 25 — VRC4b: A0→bit1, A1→bit0 (swapped)
+            // Mapper 25  EVRC4b: A0→bit1, A1→bit0 (swapped)
             25 => ((addr & 0x01) << 1) | ((addr >> 1) & 0x01),
             _ => addr & 0x03,
         };
@@ -581,7 +609,7 @@ impl Bus {
             0xF002 => {
                 self.vrc4_irq_control = data & 0x07;
                 if (data & 0x02) != 0 {
-                    // IRQ enable — reload counter and prescaler
+                    // IRQ enable  Ereload counter and prescaler
                     self.vrc4_irq_counter = self.vrc4_irq_latch;
                     self.vrc4_irq_prescaler = 341;
                 }
@@ -748,6 +776,26 @@ impl Bus {
         }
     }
 
+    fn apu_log_write(&self, addr: u16, data: u8, before: &str, after: &str) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            println!(
+                "[APU] step={} cpu_cycles={} write ${:04X}=${:02X} before=[{}] after=[{}]",
+                self.cpu_step_counter, self.cycles, addr, data, before, after
+            );
+        }
+    }
+
+    fn apu_log_dmc_fetch(&self, addr: u16, data: u8) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            println!(
+                "[APU] step={} cpu_cycles={} dmc_fetch ${:04X}->{:02X}",
+                self.cpu_step_counter, self.cycles, addr, data
+            );
+        }
+    }
+
     fn mmc1_log(&self, event: &str) {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -857,3 +905,4 @@ mod tests {
         assert_eq!(val2, 2); // Bank 2 data
     }
 }
+
