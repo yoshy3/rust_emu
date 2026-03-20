@@ -1,9 +1,10 @@
 use anyhow::{Error, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use gilrs::{Axis, Button, EventType, GamepadId, Gilrs};
 use log::error;
 use pixels::{Pixels, SurfaceTexture};
 use rust_emu::joypad::JoypadButton;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -59,6 +60,242 @@ const _SAMPLE_RATE: u32 = 44100;
 
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 240;
+const GAMEPAD_AXIS_THRESHOLD: f32 = 0.5;
+const XBOX_MAC_BUTTON_A_CODE: u32 = (9 << 16) | 1;
+const XBOX_MAC_BUTTON_X_CODE: u32 = (9 << 16) | 4;
+const XBOX_MAC_BUTTON_BACK_CODE: u32 = (9 << 16) | 11;
+const XBOX_MAC_BUTTON_START_CODE: u32 = (9 << 16) | 12;
+const XBOX_MAC_BUTTON_MODE_CODE: u32 = (9 << 16) | 13;
+const XBOX_MAC_AXIS_LEFT_X_CODE: u32 = (1 << 16) | 48;
+const XBOX_MAC_AXIS_LEFT_Y_CODE: u32 = (1 << 16) | 49;
+const XBOX_MAC_AXIS_DPAD_X_CODE: u32 = (1 << 16) | 57;
+const XBOX_MAC_AXIS_DPAD_Y_CODE: u32 = (1 << 16) | 58;
+
+#[derive(Clone, Copy)]
+enum GamepadProfile {
+    Default,
+    XboxWirelessMac,
+}
+
+impl GamepadProfile {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::XboxWirelessMac => "xbox-wireless-mac",
+        }
+    }
+}
+
+struct GamepadInput {
+    gilrs: Gilrs,
+    active_gamepad: Option<GamepadId>,
+    profile: GamepadProfile,
+    pressed_codes: HashSet<u32>,
+    axis_values: HashMap<u32, f32>,
+}
+
+impl GamepadInput {
+    fn new() -> Result<Self> {
+        let gilrs = Gilrs::new().map_err(|err| Error::msg(err.to_string()))?;
+        let active_gamepad = gilrs
+            .gamepads()
+            .find(|(_, gamepad)| gamepad.is_connected())
+            .map(|(id, _)| id);
+
+        if let Some(id) = active_gamepad {
+            let gamepad = gilrs.gamepad(id);
+            println!("[Input] Gamepad connected: {}", gamepad.name());
+        }
+
+        let profile = active_gamepad
+            .map(|id| Self::detect_profile(gilrs.gamepad(id).name()))
+            .unwrap_or(GamepadProfile::Default);
+
+        Ok(Self {
+            gilrs,
+            active_gamepad,
+            profile,
+            pressed_codes: HashSet::new(),
+            axis_values: HashMap::new(),
+        })
+    }
+
+    fn detect_profile(gamepad_name: &str) -> GamepadProfile {
+        if cfg!(target_os = "macos") && gamepad_name == "Xbox Wireless Controller" {
+            GamepadProfile::XboxWirelessMac
+        } else {
+            GamepadProfile::Default
+        }
+    }
+
+    fn set_active_gamepad(&mut self, active_gamepad: Option<GamepadId>) {
+        self.active_gamepad = active_gamepad;
+        self.pressed_codes.clear();
+        self.axis_values.clear();
+        self.profile = active_gamepad
+            .map(|id| Self::detect_profile(self.gilrs.gamepad(id).name()))
+            .unwrap_or(GamepadProfile::Default);
+
+        if let Some(id) = self.active_gamepad {
+            let gamepad = self.gilrs.gamepad(id);
+            println!(
+                "[Input] Active gamepad: {} (profile: {})",
+                gamepad.name(),
+                self.profile.name()
+            );
+        }
+    }
+
+    fn is_code_pressed(&self, code: u32) -> bool {
+        self.pressed_codes.contains(&code)
+    }
+
+    fn axis_value(&self, code: u32) -> f32 {
+        self.axis_values.get(&code).copied().unwrap_or(0.0)
+    }
+
+    fn update(&mut self) {
+        while let Some(event) = self.gilrs.next_event() {
+            match event.event {
+                EventType::Connected => {
+                    let gamepad = self.gilrs.gamepad(event.id);
+                    println!("[Input] Gamepad connected: {}", gamepad.name());
+                    if self.active_gamepad.is_none() {
+                        self.set_active_gamepad(Some(event.id));
+                    }
+                }
+                EventType::Disconnected => {
+                    let disconnected_active = self.active_gamepad == Some(event.id);
+                    let gamepad = self.gilrs.gamepad(event.id);
+                    println!("[Input] Gamepad disconnected: {}", gamepad.name());
+                    if disconnected_active {
+                        let next_gamepad = self
+                            .gilrs
+                            .gamepads()
+                            .find(|(_, gamepad)| gamepad.is_connected())
+                            .map(|(id, _)| id);
+                        self.set_active_gamepad(next_gamepad);
+                    }
+                }
+                EventType::ButtonPressed(button, code) => {
+                    let gamepad = self.gilrs.gamepad(event.id);
+                    self.pressed_codes.insert(code.into_u32());
+                    println!(
+                        "[Input] Button pressed on {}: {:?} (code: {:?}, raw: {})",
+                        gamepad.name(),
+                        button,
+                        code,
+                        code.into_u32()
+                    );
+                }
+                EventType::ButtonChanged(button, value, code) => {
+                    // Some controllers surface digital inputs as value changes.
+                    if value >= 0.5 {
+                        self.pressed_codes.insert(code.into_u32());
+                    } else {
+                        self.pressed_codes.remove(&code.into_u32());
+                    }
+                    let gamepad = self.gilrs.gamepad(event.id);
+                    println!(
+                        "[Input] Button changed on {}: {:?} = {:.3} (code: {:?}, raw: {})",
+                        gamepad.name(),
+                        button,
+                        value,
+                        code,
+                        code.into_u32()
+                    );
+                }
+                EventType::ButtonReleased(button, code) => {
+                    let gamepad = self.gilrs.gamepad(event.id);
+                    self.pressed_codes.remove(&code.into_u32());
+                    println!(
+                        "[Input] Button released on {}: {:?} (code: {:?}, raw: {})",
+                        gamepad.name(),
+                        button,
+                        code,
+                        code.into_u32()
+                    );
+                }
+                EventType::AxisChanged(axis, value, code) => {
+                    self.axis_values.insert(code.into_u32(), value);
+                    let gamepad = self.gilrs.gamepad(event.id);
+                    println!(
+                        "[Input] Axis changed on {}: {:?} = {:.3} (code: {:?}, raw: {})",
+                        gamepad.name(),
+                        axis,
+                        value,
+                        code,
+                        code.into_u32()
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn button_held(&self, button: JoypadButton) -> bool {
+        let Some(id) = self.active_gamepad else {
+            return false;
+        };
+
+        let gamepad = self.gilrs.gamepad(id);
+        match self.profile {
+            GamepadProfile::XboxWirelessMac => self.button_held_xbox_wireless_mac(button),
+            GamepadProfile::Default => {
+                let pressed = |button| gamepad.is_pressed(button);
+                let axis = |axis| gamepad.value(axis);
+
+                if button == JoypadButton::BUTTON_A {
+                    pressed(Button::South)
+                } else if button == JoypadButton::BUTTON_B {
+                    pressed(Button::West)
+                } else if button == JoypadButton::SELECT {
+                    pressed(Button::Select)
+                } else if button == JoypadButton::START {
+                    pressed(Button::Start)
+                } else if button == JoypadButton::UP {
+                    pressed(Button::DPadUp) || axis(Axis::LeftStickY) <= -GAMEPAD_AXIS_THRESHOLD
+                } else if button == JoypadButton::DOWN {
+                    pressed(Button::DPadDown) || axis(Axis::LeftStickY) >= GAMEPAD_AXIS_THRESHOLD
+                } else if button == JoypadButton::LEFT {
+                    pressed(Button::DPadLeft) || axis(Axis::LeftStickX) <= -GAMEPAD_AXIS_THRESHOLD
+                } else if button == JoypadButton::RIGHT {
+                    pressed(Button::DPadRight) || axis(Axis::LeftStickX) >= GAMEPAD_AXIS_THRESHOLD
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    fn button_held_xbox_wireless_mac(&self, button: JoypadButton) -> bool {
+        let dpad_x = self.axis_value(XBOX_MAC_AXIS_DPAD_X_CODE);
+        let dpad_y = self.axis_value(XBOX_MAC_AXIS_DPAD_Y_CODE);
+        let left_x = self.axis_value(XBOX_MAC_AXIS_LEFT_X_CODE);
+        let left_y = self.axis_value(XBOX_MAC_AXIS_LEFT_Y_CODE);
+
+        if button == JoypadButton::BUTTON_A {
+            self.is_code_pressed(XBOX_MAC_BUTTON_A_CODE)
+        } else if button == JoypadButton::BUTTON_B {
+            self.is_code_pressed(XBOX_MAC_BUTTON_X_CODE)
+        } else if button == JoypadButton::SELECT {
+            self.is_code_pressed(XBOX_MAC_BUTTON_BACK_CODE)
+                || self.is_code_pressed(XBOX_MAC_BUTTON_MODE_CODE)
+        } else if button == JoypadButton::START {
+            self.is_code_pressed(XBOX_MAC_BUTTON_START_CODE)
+        } else if button == JoypadButton::UP {
+            dpad_y >= 0.5 || left_y >= GAMEPAD_AXIS_THRESHOLD
+        } else if button == JoypadButton::DOWN {
+            dpad_y <= -0.5 || left_y <= -GAMEPAD_AXIS_THRESHOLD
+        } else if button == JoypadButton::LEFT {
+            dpad_x <= -0.5 || left_x <= -GAMEPAD_AXIS_THRESHOLD
+        } else if button == JoypadButton::RIGHT {
+            dpad_x >= 0.5 || left_x >= GAMEPAD_AXIS_THRESHOLD
+        } else {
+            false
+        }
+    }
+}
 
 fn write_save_if_needed(nes: &rust_emu::Nes, save_path: &Option<PathBuf>) {
     if let (Some(path), Some(save_data)) = (save_path, nes.battery_ram_data()) {
@@ -70,6 +307,7 @@ fn main() -> Result<()> {
     env_logger::init();
     let event_loop = EventLoop::new();
     let mut input = WinitInputHelper::new();
+    let mut gamepad_input = GamepadInput::new().ok();
 
     let window = {
         let size = LogicalSize::new(WIDTH as f64 * 3.0, HEIGHT as f64 * 3.0);
@@ -250,6 +488,10 @@ fn main() -> Result<()> {
 
             // Handle input events
             if input.update(&event) {
+                if let Some(gamepad_input) = gamepad_input.as_mut() {
+                    gamepad_input.update();
+                }
+
                 if input.key_pressed(VirtualKeyCode::Escape) || input.close_requested() {
                     write_save_if_needed(&nes, &save_path);
                     if let Some(ref path) = wav_dump_path {
@@ -270,14 +512,45 @@ fn main() -> Result<()> {
                     }
                 }
 
-                nes.set_joypad_button(JoypadButton::BUTTON_A, input.key_held(VirtualKeyCode::Z));
-                nes.set_joypad_button(JoypadButton::BUTTON_B, input.key_held(VirtualKeyCode::X));
-                nes.set_joypad_button(JoypadButton::SELECT, input.key_held(VirtualKeyCode::RShift));
-                nes.set_joypad_button(JoypadButton::START, input.key_held(VirtualKeyCode::Return));
-                nes.set_joypad_button(JoypadButton::UP, input.key_held(VirtualKeyCode::Up));
-                nes.set_joypad_button(JoypadButton::DOWN, input.key_held(VirtualKeyCode::Down));
-                nes.set_joypad_button(JoypadButton::LEFT, input.key_held(VirtualKeyCode::Left));
-                nes.set_joypad_button(JoypadButton::RIGHT, input.key_held(VirtualKeyCode::Right));
+                let gamepad_held = |button| {
+                    gamepad_input
+                        .as_ref()
+                        .map(|gamepad_input| gamepad_input.button_held(button))
+                        .unwrap_or(false)
+                };
+
+                nes.set_joypad_button(
+                    JoypadButton::BUTTON_A,
+                    input.key_held(VirtualKeyCode::Z) || gamepad_held(JoypadButton::BUTTON_A),
+                );
+                nes.set_joypad_button(
+                    JoypadButton::BUTTON_B,
+                    input.key_held(VirtualKeyCode::X) || gamepad_held(JoypadButton::BUTTON_B),
+                );
+                nes.set_joypad_button(
+                    JoypadButton::SELECT,
+                    input.key_held(VirtualKeyCode::RShift) || gamepad_held(JoypadButton::SELECT),
+                );
+                nes.set_joypad_button(
+                    JoypadButton::START,
+                    input.key_held(VirtualKeyCode::Return) || gamepad_held(JoypadButton::START),
+                );
+                nes.set_joypad_button(
+                    JoypadButton::UP,
+                    input.key_held(VirtualKeyCode::Up) || gamepad_held(JoypadButton::UP),
+                );
+                nes.set_joypad_button(
+                    JoypadButton::DOWN,
+                    input.key_held(VirtualKeyCode::Down) || gamepad_held(JoypadButton::DOWN),
+                );
+                nes.set_joypad_button(
+                    JoypadButton::LEFT,
+                    input.key_held(VirtualKeyCode::Left) || gamepad_held(JoypadButton::LEFT),
+                );
+                nes.set_joypad_button(
+                    JoypadButton::RIGHT,
+                    input.key_held(VirtualKeyCode::Right) || gamepad_held(JoypadButton::RIGHT),
+                );
             }
 
             // Step emulator for one frame if it's time
@@ -310,5 +583,3 @@ fn main() -> Result<()> {
         // run diverges
     }
 }
-
-

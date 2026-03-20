@@ -277,16 +277,111 @@
         'z': 0, 'x': 1, 'Shift': 2, 'Enter': 3,
         'ArrowUp': 4, 'ArrowDown': 5, 'ArrowLeft': 6, 'ArrowRight': 7
       };
+      const keyboardState = new Array(8).fill(false);
+      const gamepadState = new Array(8).fill(false);
+      const previousGamepadButtons = [];
+      const previousGamepadAxes = [];
+
+      const logGamepadChanges = (gamepad) => {
+        for (let i = 0; i < gamepad.buttons.length; i++) {
+          const button = gamepad.buttons[i];
+          const pressed = !!button && (button.pressed || button.value >= 0.5);
+          if (previousGamepadButtons[i] !== pressed) {
+            previousGamepadButtons[i] = pressed;
+            if (pressed) {
+              console.log("[Input] Gamepad button pressed:", {
+                id: gamepad.id,
+                index: i,
+                value: button.value,
+                mapping: gamepad.mapping,
+              });
+            }
+          }
+        }
+
+        for (let i = 0; i < gamepad.axes.length; i++) {
+          const value = gamepad.axes[i] ?? 0;
+          const previous = previousGamepadAxes[i] ?? 0;
+          if (Math.abs(value - previous) >= 0.5) {
+            previousGamepadAxes[i] = value;
+            console.log("[Input] Gamepad axis changed:", {
+              id: gamepad.id,
+              index: i,
+              value,
+              mapping: gamepad.mapping,
+            });
+          }
+        }
+      };
+
+      const applyJoypadState = () => {
+        for (let i = 0; i < 8; i++) {
+          nes.set_joypad_button_wasm(i, keyboardState[i] || gamepadState[i]);
+        }
+      };
+
+      const axisNear = (value, target, tolerance = 0.2) => Math.abs(value - target) <= tolerance;
+
+      const pollGamepad = () => {
+        gamepadState.fill(false);
+        const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+        const gamepad = Array.from(gamepads).find((pad) => pad && pad.connected);
+        if (!gamepad) {
+          return;
+        }
+
+        logGamepadChanges(gamepad);
+
+        const buttonPressed = (index) => {
+          const button = gamepad.buttons[index];
+          return !!button && (button.pressed || button.value >= 0.5);
+        };
+        const axisValue = (index) => gamepad.axes[index] ?? 0;
+        const isFirefoxRawMapping = gamepad.mapping === '';
+        const isFirefoxRawXbox = isFirefoxRawMapping && gamepad.id.includes('Xbox Wireless Controller');
+
+        if (isFirefoxRawXbox) {
+          gamepadState[0] = buttonPressed(0); // NES A <- A
+          gamepadState[1] = buttonPressed(3); // NES B <- X
+          gamepadState[2] = buttonPressed(10); // Select <- View
+          gamepadState[3] = buttonPressed(11); // Start <- Menu
+          gamepadState[4] = axisValue(1) <= -0.5;
+          gamepadState[5] = axisValue(1) >= 0.5;
+          gamepadState[6] = axisValue(0) <= -0.5;
+          gamepadState[7] = axisValue(0) >= 0.5;
+          return;
+        }
+
+        gamepadState[0] = buttonPressed(0); // NES A <- South / A
+        gamepadState[1] = buttonPressed(2); // NES B <- West / X
+        gamepadState[2] = buttonPressed(8); // Select <- Back / View
+        gamepadState[3] = buttonPressed(9); // Start <- Start / Menu
+        gamepadState[4] = buttonPressed(12) || axisValue(1) <= -0.5;
+        gamepadState[5] = buttonPressed(13) || axisValue(1) >= 0.5;
+        gamepadState[6] = buttonPressed(14) || axisValue(0) <= -0.5;
+        gamepadState[7] = buttonPressed(15) || axisValue(0) >= 0.5;
+      };
+
+      window.addEventListener('gamepadconnected', (e) => {
+        console.log("[Input] Gamepad connected:", e.gamepad.id);
+      });
+      window.addEventListener('gamepaddisconnected', (e) => {
+        console.log("[Input] Gamepad disconnected:", e.gamepad.id);
+      });
 
       window.addEventListener('keydown', (e) => {
         initAudio();
         if (keyMap[e.key] !== undefined) {
-          nes.set_joypad_button_wasm(keyMap[e.key], true);
+          e.preventDefault();
+          keyboardState[keyMap[e.key]] = true;
+          applyJoypadState();
         }
       });
       window.addEventListener('keyup', (e) => {
         if (keyMap[e.key] !== undefined) {
-          nes.set_joypad_button_wasm(keyMap[e.key], false);
+          e.preventDefault();
+          keyboardState[keyMap[e.key]] = false;
+          applyJoypadState();
         }
       });
 
@@ -313,6 +408,9 @@
 
       function step(currentTime) {
         try {
+          pollGamepad();
+          applyJoypadState();
+
           const dt = (currentTime - lastTime) / 1000.0;
           lastTime = currentTime;
 
