@@ -12,6 +12,8 @@ const DMC_PERIOD_TABLE: [u16; 16] = [
     428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54,
 ];
 
+const PULSE_EDGE_SMOOTH_CYCLES: u8 = 10;
+
 pub struct Apu {
     // Pulse 1
     pulse1_enabled: bool,
@@ -32,6 +34,10 @@ pub struct Apu {
     pulse1_sweep_shift: u8,
     pulse1_sweep_reload: bool,
     pulse1_sweep_divider: u8,
+    pulse1_render_level: f32,
+    pulse1_render_target: f32,
+    pulse1_render_step: f32,
+    pulse1_render_remaining: u8,
 
     // Pulse 2
     pulse2_enabled: bool,
@@ -52,6 +58,10 @@ pub struct Apu {
     pulse2_sweep_shift: u8,
     pulse2_sweep_reload: bool,
     pulse2_sweep_divider: u8,
+    pulse2_render_level: f32,
+    pulse2_render_target: f32,
+    pulse2_render_step: f32,
+    pulse2_render_remaining: u8,
 
     // Triangle
     triangle_enabled: bool,
@@ -140,6 +150,10 @@ impl Apu {
             pulse1_sweep_shift: 0,
             pulse1_sweep_reload: false,
             pulse1_sweep_divider: 0,
+            pulse1_render_level: 0.0,
+            pulse1_render_target: 0.0,
+            pulse1_render_step: 0.0,
+            pulse1_render_remaining: 0,
 
             pulse2_enabled: false,
             pulse2_length_counter: 0,
@@ -159,6 +173,10 @@ impl Apu {
             pulse2_sweep_shift: 0,
             pulse2_sweep_reload: false,
             pulse2_sweep_divider: 0,
+            pulse2_render_level: 0.0,
+            pulse2_render_target: 0.0,
+            pulse2_render_step: 0.0,
+            pulse2_render_remaining: 0,
 
             triangle_enabled: false,
             triangle_length_counter: 0,
@@ -411,58 +429,17 @@ impl Apu {
         // Sweep mute: period < 8 always mutes; target > $7FF only mutes when NOT negating
         // (negate mode subtracts, so overflow into bit 11 cannot occur)
         let solo = self.solo_channel;
-        let p1_mute = self.pulse1_timer_period < 8
-            || (!self.pulse1_sweep_negate && self.pulse1_target_period() > 0x7FF);
-        let p1 = if self.pulse1_length_counter > 0 && !p1_mute {
-            let duty_table = [
-                [0, 1, 0, 0, 0, 0, 0, 0],
-                [0, 1, 1, 0, 0, 0, 0, 0],
-                [0, 1, 1, 1, 1, 0, 0, 0],
-                [1, 0, 0, 1, 1, 1, 1, 1],
-            ];
-            if duty_table[self.pulse1_duty as usize][self.pulse1_duty_pos as usize] == 1 {
-                if self.pulse1_constant_volume {
-                    self.pulse1_volume
-                } else {
-                    self.pulse1_env_decay
-                }
-            } else {
-                0
-            }
-        } else {
-            0
-        };
+        let p1 = self.pulse1_render_level;
+        let p2 = self.pulse2_render_level;
 
-        let p2_mute = self.pulse2_timer_period < 8
-            || (!self.pulse2_sweep_negate && self.pulse2_target_period() > 0x7FF);
-        let p2 = if self.pulse2_length_counter > 0 && !p2_mute {
-            let duty_table = [
-                [0, 1, 0, 0, 0, 0, 0, 0],
-                [0, 1, 1, 0, 0, 0, 0, 0],
-                [0, 1, 1, 1, 1, 0, 0, 0],
-                [1, 0, 0, 1, 1, 1, 1, 1],
-            ];
-            if duty_table[self.pulse2_duty as usize][self.pulse2_duty_pos as usize] == 1 {
-                if self.pulse2_constant_volume {
-                    self.pulse2_volume
-                } else {
-                    self.pulse2_env_decay
-                }
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-
-        let pulse_out = if p1 + p2 > 0 {
+        let pulse_out = if p1 + p2 > 0.0 {
             let p1_s = if solo == 0 || solo == 1 {
-                p1 as f32
+                p1
             } else {
                 0.0
             };
             let p2_s = if solo == 0 || solo == 2 {
-                p2 as f32
+                p2
             } else {
                 0.0
             };
@@ -584,6 +561,8 @@ impl Apu {
                 self.dmc_timer = self.dmc_timer_period.saturating_sub(1);
                 self.clock_dmc();
             }
+
+            self.update_pulse_renderers();
 
             self.frame_counter_cycle += 1;
             // ... (rest of frame counter logic)
@@ -847,6 +826,98 @@ impl Apu {
         } else {
             self.output()
         }
+    }
+
+    fn pulse1_raw_level(&self) -> f32 {
+        let p1_mute =
+            self.pulse1_timer_period < 8 || (!self.pulse1_sweep_negate && self.pulse1_target_period() > 0x7FF);
+        if self.pulse1_length_counter == 0 || p1_mute {
+            return 0.0;
+        }
+
+        let duty_table = [
+            [0, 1, 0, 0, 0, 0, 0, 0],
+            [0, 1, 1, 0, 0, 0, 0, 0],
+            [0, 1, 1, 1, 1, 0, 0, 0],
+            [1, 0, 0, 1, 1, 1, 1, 1],
+        ];
+
+        if duty_table[self.pulse1_duty as usize][self.pulse1_duty_pos as usize] == 1 {
+            if self.pulse1_constant_volume {
+                self.pulse1_volume as f32
+            } else {
+                self.pulse1_env_decay as f32
+            }
+        } else {
+            0.0
+        }
+    }
+
+    fn pulse2_raw_level(&self) -> f32 {
+        let p2_mute =
+            self.pulse2_timer_period < 8 || (!self.pulse2_sweep_negate && self.pulse2_target_period() > 0x7FF);
+        if self.pulse2_length_counter == 0 || p2_mute {
+            return 0.0;
+        }
+
+        let duty_table = [
+            [0, 1, 0, 0, 0, 0, 0, 0],
+            [0, 1, 1, 0, 0, 0, 0, 0],
+            [0, 1, 1, 1, 1, 0, 0, 0],
+            [1, 0, 0, 1, 1, 1, 1, 1],
+        ];
+
+        if duty_table[self.pulse2_duty as usize][self.pulse2_duty_pos as usize] == 1 {
+            if self.pulse2_constant_volume {
+                self.pulse2_volume as f32
+            } else {
+                self.pulse2_env_decay as f32
+            }
+        } else {
+            0.0
+        }
+    }
+
+    fn update_pulse_renderer(
+        level: &mut f32,
+        target: &mut f32,
+        step: &mut f32,
+        remaining: &mut u8,
+        desired: f32,
+    ) {
+        if (desired - *target).abs() > f32::EPSILON {
+            *target = desired;
+            *remaining = PULSE_EDGE_SMOOTH_CYCLES;
+            *step = (*target - *level) / PULSE_EDGE_SMOOTH_CYCLES as f32;
+        }
+
+        if *remaining > 0 {
+            *level += *step;
+            *remaining -= 1;
+            if *remaining == 0 {
+                *level = *target;
+            }
+        }
+    }
+
+    fn update_pulse_renderers(&mut self) {
+        let desired_p1 = self.pulse1_raw_level();
+        let desired_p2 = self.pulse2_raw_level();
+
+        Self::update_pulse_renderer(
+            &mut self.pulse1_render_level,
+            &mut self.pulse1_render_target,
+            &mut self.pulse1_render_step,
+            &mut self.pulse1_render_remaining,
+            desired_p1,
+        );
+        Self::update_pulse_renderer(
+            &mut self.pulse2_render_level,
+            &mut self.pulse2_render_target,
+            &mut self.pulse2_render_step,
+            &mut self.pulse2_render_remaining,
+            desired_p2,
+        );
     }
 
     pub fn debug_mix_summary(&self) -> String {
