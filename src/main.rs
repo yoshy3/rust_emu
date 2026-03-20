@@ -15,7 +15,7 @@ use winit::window::WindowBuilder;
 use winit_input_helper::WinitInputHelper;
 
 /// Write a stereo WAV file (IEEE float 32-bit)
-/// Left channel = raw (pre-filter), Right channel = filtered (post-filter)
+/// Both channels carry the emulator output sample for easy comparison.
 fn write_wav_file(path: &str, sample_rate: u32, samples: &[(f32, f32)]) -> std::io::Result<()> {
     let mut f = std::fs::File::create(path)?;
     let num_channels: u16 = 2;
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
     let mut wav_dump_path: Option<String> = None;
     let mut lpf_cutoff: f32 = 14000.0; // default LPF cutoff frequency (Hz)
     let mut hpf1_cutoff: f32 = 90.0;    // default HPF stage 1 (DC blocking)
-    let mut hpf2_cutoff: f32 = 150.0;   // default HPF stage 2
+    let mut hpf2_cutoff: f32 = 440.0;   // default HPF stage 2
     for arg in args.iter().skip(1) {
         if arg == "--trace" {
             tracing = true;
@@ -181,6 +181,7 @@ fn main() -> Result<()> {
         .expect("No output device available");
     let config = device.default_output_config().unwrap();
     let sample_rate = config.sample_rate().0;
+    nes.audio_sample_rate = sample_rate as f32;
 
     let audio_buffer = Arc::new(Mutex::new(VecDeque::<f32>::new()));
     let audio_buffer_out = Arc::clone(&audio_buffer);
@@ -209,25 +210,14 @@ fn main() -> Result<()> {
         .unwrap();
     stream.play().unwrap();
 
-    let mut audio_samples_needed = 0.0;
-    let samples_per_cpu_cycle = sample_rate as f64 / 1_789_773.0; // CPU clock rate
-
     let mut last_frame_time = Instant::now();
     let frame_duration = Duration::from_nanos(16639267); // NES NTSC ~60.098 Hz
-
-    // NES audio filter chain state (LP 14kHz ×2 → HP 90Hz → HP 150Hz)
-    let mut lp1_prev_out: f32 = 0.0;
-    let mut lp2_prev_out: f32 = 0.0;
-    let mut hp1_prev_in: f32 = 0.0;
-    let mut hp1_prev_out: f32 = 0.0;
-    let mut hp2_prev_in: f32 = 0.0;
-    let mut hp2_prev_out: f32 = 0.0;
 
     // WAV dump buffer: (raw, filtered) stereo pairs
     let mut wav_samples: Vec<(f32, f32)> = Vec::new();
     let wav_enabled = wav_dump_path.is_some();
     if wav_enabled {
-        println!("[WAV] Capture enabled → {}", wav_dump_path.as_deref().unwrap());
+        println!("[WAV] Capture enabled ↁE{}", wav_dump_path.as_deref().unwrap());
     }
 
     if tracing {
@@ -293,64 +283,20 @@ fn main() -> Result<()> {
             // Step emulator for one frame if it's time
             if last_frame_time.elapsed() >= frame_duration {
                 let mut cycles = 0;
-                let mut apu_sum = 0.0;
-                let mut apu_count = 0;
-
                 while cycles < 29781 {
                     let step_cycles = nes.tick();
                     cycles += step_cycles;
-
-                    // Accumulate APU output for averaging (Oversampling)
-                    let current_output = nes.bus.apu.averaged_output();
-                    apu_sum += current_output * step_cycles as f32;
-                    apu_count += step_cycles as i32;
-
-                    audio_samples_needed += step_cycles as f64 * samples_per_cpu_cycle;
-                    if audio_samples_needed >= 1.0 {
+                    let samples = nes.get_audio_samples();
+                    if !samples.is_empty() {
                         let mut buffer = audio_buffer.lock().unwrap();
-                        if buffer.len() < 4096 {
-                            let num_samples = audio_samples_needed as i32;
-                            let raw = if apu_count > 0 {
-                                apu_sum / apu_count as f32
-                            } else {
-                                current_output
-                            };
-                            for _ in 0..num_samples {
-                                // NES audio filter chain: LP first, then HP
-                                let fs = sample_rate as f32;
-
-                                // Stage 1-2: Low-pass (2nd-order cascaded)
-                                let k_lp = std::f32::consts::TAU * lpf_cutoff / fs;
-                                let a_lp = k_lp / (1.0 + k_lp);
-                                let lp1 = a_lp * raw + (1.0 - a_lp) * lp1_prev_out;
-                                lp1_prev_out = lp1;
-                                let lp2 = a_lp * lp1 + (1.0 - a_lp) * lp2_prev_out;
-                                lp2_prev_out = lp2;
-
-                                // Stage 3: High-pass (DC blocking)
-                                let k1 = 1.0 / (1.0 + std::f32::consts::TAU * hpf1_cutoff / fs);
-                                let hp1 = k1 * (hp1_prev_out + lp2 - hp1_prev_in);
-                                hp1_prev_in = lp2;
-                                hp1_prev_out = hp1;
-
-                                // Stage 4: High-pass
-                                let k2 = 1.0 / (1.0 + std::f32::consts::TAU * hpf2_cutoff / fs);
-                                let hp2 = k2 * (hp2_prev_out + hp1 - hp2_prev_in);
-                                hp2_prev_in = hp1;
-                                hp2_prev_out = hp2;
-
-                                // Capture for WAV dump
-                                if wav_enabled {
-                                    wav_samples.push((raw, hp2));
-                                }
-
-                                buffer.push_back(hp2);
+                        for sample in samples {
+                            if buffer.len() < 4096 {
+                                buffer.push_back(sample);
                             }
-                            // Reset accumulator once per batch (NOT per sample)
-                            apu_sum = 0.0;
-                            apu_count = 0;
+                            if wav_enabled {
+                                wav_samples.push((sample, sample));
+                            }
                         }
-                        audio_samples_needed -= audio_samples_needed as i32 as f64;
                     }
                 }
                 last_frame_time += frame_duration;
@@ -364,3 +310,5 @@ fn main() -> Result<()> {
         // run diverges
     }
 }
+
+
