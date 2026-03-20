@@ -199,10 +199,8 @@
       const imageData = ctx.createImageData(width, height);
       const data = imageData.data;
 
-      console.log("[JS] Starting run()...");
       try {
         await init();
-        console.log("[JS] Wasm initialized.");
         statusEl.innerText = "Drag & Drop a .nes file here";
         versionEl.innerText = "v" + get_version();
       } catch (e) {
@@ -277,16 +275,66 @@
         'z': 0, 'x': 1, 'Shift': 2, 'Enter': 3,
         'ArrowUp': 4, 'ArrowDown': 5, 'ArrowLeft': 6, 'ArrowRight': 7
       };
+      const keyboardState = new Array(8).fill(false);
+      const gamepadState = new Array(8).fill(false);
+
+      const applyJoypadState = () => {
+        for (let i = 0; i < 8; i++) {
+          nes.set_joypad_button_wasm(i, keyboardState[i] || gamepadState[i]);
+        }
+      };
+
+      const pollGamepad = () => {
+        gamepadState.fill(false);
+        const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+        const gamepad = Array.from(gamepads).find((pad) => pad && pad.connected);
+        if (!gamepad) {
+          return;
+        }
+
+        const buttonPressed = (index) => {
+          const button = gamepad.buttons[index];
+          return !!button && (button.pressed || button.value >= 0.5);
+        };
+        const axisValue = (index) => gamepad.axes[index] ?? 0;
+        const isFirefoxRawMapping = gamepad.mapping === '';
+        const isFirefoxRawXbox = isFirefoxRawMapping && gamepad.id.includes('Xbox Wireless Controller');
+
+        if (isFirefoxRawXbox) {
+          gamepadState[0] = buttonPressed(0); // NES A <- A
+          gamepadState[1] = buttonPressed(3); // NES B <- X
+          gamepadState[2] = buttonPressed(10); // Select <- View
+          gamepadState[3] = buttonPressed(11); // Start <- Menu
+          gamepadState[4] = axisValue(1) <= -0.5;
+          gamepadState[5] = axisValue(1) >= 0.5;
+          gamepadState[6] = axisValue(0) <= -0.5;
+          gamepadState[7] = axisValue(0) >= 0.5;
+          return;
+        }
+
+        gamepadState[0] = buttonPressed(0); // NES A <- South / A
+        gamepadState[1] = buttonPressed(2); // NES B <- West / X
+        gamepadState[2] = buttonPressed(8); // Select <- Back / View
+        gamepadState[3] = buttonPressed(9); // Start <- Start / Menu
+        gamepadState[4] = buttonPressed(12) || axisValue(1) <= -0.5;
+        gamepadState[5] = buttonPressed(13) || axisValue(1) >= 0.5;
+        gamepadState[6] = buttonPressed(14) || axisValue(0) <= -0.5;
+        gamepadState[7] = buttonPressed(15) || axisValue(0) >= 0.5;
+      };
 
       window.addEventListener('keydown', (e) => {
         initAudio();
         if (keyMap[e.key] !== undefined) {
-          nes.set_joypad_button_wasm(keyMap[e.key], true);
+          e.preventDefault();
+          keyboardState[keyMap[e.key]] = true;
+          applyJoypadState();
         }
       });
       window.addEventListener('keyup', (e) => {
         if (keyMap[e.key] !== undefined) {
-          nes.set_joypad_button_wasm(keyMap[e.key], false);
+          e.preventDefault();
+          keyboardState[keyMap[e.key]] = false;
+          applyJoypadState();
         }
       });
 
@@ -298,11 +346,9 @@
         if (!audioCtx) {
           audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
           nextAudioTime = audioCtx.currentTime;
-          console.log("[Audio] Context initialized.");
         }
         if (audioCtx.state === 'suspended') {
           audioCtx.resume();
-          console.log("[Audio] Context resumed.");
         }
       };
 
@@ -313,6 +359,9 @@
 
       function step(currentTime) {
         try {
+          pollGamepad();
+          applyJoypadState();
+
           const dt = (currentTime - lastTime) / 1000.0;
           lastTime = currentTime;
 
