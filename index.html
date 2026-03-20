@@ -199,10 +199,8 @@
       const imageData = ctx.createImageData(width, height);
       const data = imageData.data;
 
-      console.log("[JS] Starting run()...");
       try {
         await init();
-        console.log("[JS] Wasm initialized.");
         statusEl.innerText = "Drag & Drop a .nes file here";
         versionEl.innerText = "v" + get_version();
       } catch (e) {
@@ -279,48 +277,12 @@
       };
       const keyboardState = new Array(8).fill(false);
       const gamepadState = new Array(8).fill(false);
-      const previousGamepadButtons = [];
-      const previousGamepadAxes = [];
-
-      const logGamepadChanges = (gamepad) => {
-        for (let i = 0; i < gamepad.buttons.length; i++) {
-          const button = gamepad.buttons[i];
-          const pressed = !!button && (button.pressed || button.value >= 0.5);
-          if (previousGamepadButtons[i] !== pressed) {
-            previousGamepadButtons[i] = pressed;
-            if (pressed) {
-              console.log("[Input] Gamepad button pressed:", {
-                id: gamepad.id,
-                index: i,
-                value: button.value,
-                mapping: gamepad.mapping,
-              });
-            }
-          }
-        }
-
-        for (let i = 0; i < gamepad.axes.length; i++) {
-          const value = gamepad.axes[i] ?? 0;
-          const previous = previousGamepadAxes[i] ?? 0;
-          if (Math.abs(value - previous) >= 0.5) {
-            previousGamepadAxes[i] = value;
-            console.log("[Input] Gamepad axis changed:", {
-              id: gamepad.id,
-              index: i,
-              value,
-              mapping: gamepad.mapping,
-            });
-          }
-        }
-      };
 
       const applyJoypadState = () => {
         for (let i = 0; i < 8; i++) {
           nes.set_joypad_button_wasm(i, keyboardState[i] || gamepadState[i]);
         }
       };
-
-      const axisNear = (value, target, tolerance = 0.2) => Math.abs(value - target) <= tolerance;
 
       const pollGamepad = () => {
         gamepadState.fill(false);
@@ -329,8 +291,6 @@
         if (!gamepad) {
           return;
         }
-
-        logGamepadChanges(gamepad);
 
         const buttonPressed = (index) => {
           const button = gamepad.buttons[index];
@@ -362,13 +322,6 @@
         gamepadState[7] = buttonPressed(15) || axisValue(0) >= 0.5;
       };
 
-      window.addEventListener('gamepadconnected', (e) => {
-        console.log("[Input] Gamepad connected:", e.gamepad.id);
-      });
-      window.addEventListener('gamepaddisconnected', (e) => {
-        console.log("[Input] Gamepad disconnected:", e.gamepad.id);
-      });
-
       window.addEventListener('keydown', (e) => {
         initAudio();
         if (keyMap[e.key] !== undefined) {
@@ -393,11 +346,9 @@
         if (!audioCtx) {
           audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
           nextAudioTime = audioCtx.currentTime;
-          console.log("[Audio] Context initialized.");
         }
         if (audioCtx.state === 'suspended') {
           audioCtx.resume();
-          console.log("[Audio] Context resumed.");
         }
       };
 

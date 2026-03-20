@@ -77,15 +77,6 @@ enum GamepadProfile {
     XboxWirelessMac,
 }
 
-impl GamepadProfile {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::XboxWirelessMac => "xbox-wireless-mac",
-        }
-    }
-}
-
 struct GamepadInput {
     gilrs: Gilrs,
     active_gamepad: Option<GamepadId>,
@@ -101,11 +92,6 @@ impl GamepadInput {
             .gamepads()
             .find(|(_, gamepad)| gamepad.is_connected())
             .map(|(id, _)| id);
-
-        if let Some(id) = active_gamepad {
-            let gamepad = gilrs.gamepad(id);
-            println!("[Input] Gamepad connected: {}", gamepad.name());
-        }
 
         let profile = active_gamepad
             .map(|id| Self::detect_profile(gilrs.gamepad(id).name()))
@@ -135,15 +121,6 @@ impl GamepadInput {
         self.profile = active_gamepad
             .map(|id| Self::detect_profile(self.gilrs.gamepad(id).name()))
             .unwrap_or(GamepadProfile::Default);
-
-        if let Some(id) = self.active_gamepad {
-            let gamepad = self.gilrs.gamepad(id);
-            println!(
-                "[Input] Active gamepad: {} (profile: {})",
-                gamepad.name(),
-                self.profile.name()
-            );
-        }
     }
 
     fn is_code_pressed(&self, code: u32) -> bool {
@@ -158,16 +135,12 @@ impl GamepadInput {
         while let Some(event) = self.gilrs.next_event() {
             match event.event {
                 EventType::Connected => {
-                    let gamepad = self.gilrs.gamepad(event.id);
-                    println!("[Input] Gamepad connected: {}", gamepad.name());
                     if self.active_gamepad.is_none() {
                         self.set_active_gamepad(Some(event.id));
                     }
                 }
                 EventType::Disconnected => {
                     let disconnected_active = self.active_gamepad == Some(event.id);
-                    let gamepad = self.gilrs.gamepad(event.id);
-                    println!("[Input] Gamepad disconnected: {}", gamepad.name());
                     if disconnected_active {
                         let next_gamepad = self
                             .gilrs
@@ -177,56 +150,22 @@ impl GamepadInput {
                         self.set_active_gamepad(next_gamepad);
                     }
                 }
-                EventType::ButtonPressed(button, code) => {
-                    let gamepad = self.gilrs.gamepad(event.id);
+                EventType::ButtonPressed(_, code) => {
                     self.pressed_codes.insert(code.into_u32());
-                    println!(
-                        "[Input] Button pressed on {}: {:?} (code: {:?}, raw: {})",
-                        gamepad.name(),
-                        button,
-                        code,
-                        code.into_u32()
-                    );
                 }
-                EventType::ButtonChanged(button, value, code) => {
+                EventType::ButtonChanged(_, value, code) => {
                     // Some controllers surface digital inputs as value changes.
                     if value >= 0.5 {
                         self.pressed_codes.insert(code.into_u32());
                     } else {
                         self.pressed_codes.remove(&code.into_u32());
                     }
-                    let gamepad = self.gilrs.gamepad(event.id);
-                    println!(
-                        "[Input] Button changed on {}: {:?} = {:.3} (code: {:?}, raw: {})",
-                        gamepad.name(),
-                        button,
-                        value,
-                        code,
-                        code.into_u32()
-                    );
                 }
-                EventType::ButtonReleased(button, code) => {
-                    let gamepad = self.gilrs.gamepad(event.id);
+                EventType::ButtonReleased(_, code) => {
                     self.pressed_codes.remove(&code.into_u32());
-                    println!(
-                        "[Input] Button released on {}: {:?} (code: {:?}, raw: {})",
-                        gamepad.name(),
-                        button,
-                        code,
-                        code.into_u32()
-                    );
                 }
-                EventType::AxisChanged(axis, value, code) => {
+                EventType::AxisChanged(_, value, code) => {
                     self.axis_values.insert(code.into_u32(), value);
-                    let gamepad = self.gilrs.gamepad(event.id);
-                    println!(
-                        "[Input] Axis changed on {}: {:?} = {:.3} (code: {:?}, raw: {})",
-                        gamepad.name(),
-                        axis,
-                        value,
-                        code,
-                        code.into_u32()
-                    );
                 }
                 _ => {}
             }
