@@ -62,6 +62,8 @@ ROMを指定して起動した場合、バッテリバックアップ対応カ�
 | **Right** | `Right Arrow`      | `Right Arrow` |
 | **Exit**  | `Esc`              | -          |
 
+デスクトップ版はゲームコントローラにも対応しています。既定では `D-Pad` または左スティックで移動し、`South` ボタンが NES の `A`、`West` ボタンが NES の `B`、`Start` / `Select` がそのまま `Start` / `Select` に割り当てられます。キーボードとゲームコントローラは同時に使えます。
+
 ## プロジェクト構造
 - `src/main.rs`: デスクトップ向けハードウェアインターフェース（pixels + cpal）。
 - `src/lib.rs`: WebAssemblyブリッジおよび共有エミュレータ。

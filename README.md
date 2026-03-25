@@ -60,7 +60,7 @@ When loading a ROM path (e.g. `cargo run -- path/to/game.nes`), battery-backed s
 | **Right**  | `Right Arrow`   | `Right Arrow` |
 | **Exit**   | `Esc`           | -          |
 
-Desktop版はゲームコントローラにも対応しています。既定では `D-Pad` または左スティックで移動し、`South` ボタンが NES の `A`、`West` ボタンが NES の `B`、`Start` / `Select` がそのまま `Start` / `Select` に割り当てられます。キーボードとゲームコントローラは同時に使えます。
+The desktop version also supports game controllers. By default, movement is mapped to the `D-Pad` or left stick, the `South` button maps to NES `A`, the `West` button maps to NES `B`, and `Start` / `Select` map directly to `Start` / `Select`. You can use the keyboard and a game controller at the same time.
 
 ## Project Structure
 - `src/main.rs`: Desktop hardware interface (pixels + cpal).
