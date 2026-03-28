@@ -2,8 +2,12 @@ use crate::apu::Apu;
 use crate::cartridge::Mirroring;
 use crate::joypad::Joypad;
 use crate::ppu::Ppu;
+use serde::{Deserialize, Serialize};
+use serde_big_array::BigArray;
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Bus {
+    #[serde(with = "BigArray")]
     pub cpu_vram: [u8; 2048],
     pub prg_rom: Vec<u8>,
     pub ppu: Ppu,
@@ -905,4 +909,3 @@ mod tests {
         assert_eq!(val2, 2); // Bank 2 data
     }
 }
-

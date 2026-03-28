@@ -1,5 +1,6 @@
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
+use serde::{Deserialize, Serialize};
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -40,6 +41,19 @@ pub enum JoypadButtonWasm {
     Down,
     Left,
     Right,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct NesSnapshot {
+    cpu: Cpu,
+    bus: Bus,
+    audio_sample_rate: f32,
+    audio_samples_needed: f64,
+    hp1_prev_in: f32,
+    hp1_prev_out: f32,
+    hp2_prev_in: f32,
+    hp2_prev_out: f32,
+    lp1_prev_out: f32,
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
@@ -136,6 +150,33 @@ impl Nes {
 
     pub fn battery_ram_data(&self) -> Option<Vec<u8>> {
         self.bus.battery_ram_data().map(|ram| ram.to_vec())
+    }
+
+    pub fn save_state(&self) -> NesSnapshot {
+        NesSnapshot {
+            cpu: self.cpu.clone(),
+            bus: self.bus.clone(),
+            audio_sample_rate: self.audio_sample_rate,
+            audio_samples_needed: self.audio_samples_needed,
+            hp1_prev_in: self.hp1_prev_in,
+            hp1_prev_out: self.hp1_prev_out,
+            hp2_prev_in: self.hp2_prev_in,
+            hp2_prev_out: self.hp2_prev_out,
+            lp1_prev_out: self.lp1_prev_out,
+        }
+    }
+
+    pub fn load_state(&mut self, snapshot: &NesSnapshot) {
+        self.cpu = snapshot.cpu.clone();
+        self.bus = snapshot.bus.clone();
+        self.audio_sample_rate = snapshot.audio_sample_rate;
+        self.audio_samples_needed = snapshot.audio_samples_needed;
+        self.hp1_prev_in = snapshot.hp1_prev_in;
+        self.hp1_prev_out = snapshot.hp1_prev_out;
+        self.hp2_prev_in = snapshot.hp2_prev_in;
+        self.hp2_prev_out = snapshot.hp2_prev_out;
+        self.lp1_prev_out = snapshot.lp1_prev_out;
+        self.audio_samples.clear();
     }
 }
 
@@ -274,5 +315,3 @@ impl Nes {
         self.set_joypad_button(btn, status);
     }
 }
-
-

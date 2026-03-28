@@ -15,8 +15,7 @@ Rustで書かれた、デスクトップ（Windows/Mac/Linux）およびWebAssem
 ## 特徴
 - **クロスプラットフォーム**: デスクトップおよびモダンなウェブブラウザで動作します。
 - **レンダリング**: `pixels` ライブラリを使用したハードウェアアクセラレーションによる2D描画。
-- **オーディオ**: OversamplingとDCブロッカーを搭載したAPU実装（デスクトップ・Web両対応）。
-- **Web対応**: `wasm-bindgen` を使用したビルドと、720p相当へのスケーリング対応。
+- **Web対応**: `wasm-bindgen` を使用したビルド。
 - **Mapper対応**: Mapper 0 (NROM), Mapper 1 (MMC1), Mapper 2 (UxROM), Mapper 3 (CNROM), Mapper 4 (MMC3), Mapper 21/23/25 (VRC4)。
 - **バッテリセーブ（デスクトップ）**: バッテリバックアップ対応ROMでは、PRG RAMをROMと同じ場所の `.sav` ファイルに保存/復元します。
 
@@ -30,11 +29,11 @@ Rustで書かれた、デスクトップ（Windows/Mac/Linux）およびWebAssem
 ### デスクトップ
 ネイティブ環境での実行：
 ```bash
-cargo run -- /path/to/game.nes
+cargo run
 ```
 `Esc` キーで終了します。
 
-ROMを指定して起動した場合、バッテリバックアップ対応カートリッジは `/path/to/game.sav` にセーブデータを書き込みます。
+ROM のパスを指定して起動した場合（例: `cargo run -- path/to/game.nes`）、バッテリバックアップ対応カートリッジは `path/to/game.sav` にセーブデータを書き込みます。
 
 ### Web (WASM)
 1. Web向けにビルド：
@@ -46,7 +45,6 @@ ROMを指定して起動した場合、バッテリバックアップ対応カ�
    python3 -m http.server 8000
    ```
 3. ブラウザで `http://localhost:8000` を開きます。
-4. ROMファイルをブラウザ上の画面にドラッグ＆ドロップしてください。
 
 ## 操作方法 (Controls)
 
@@ -61,8 +59,12 @@ ROMを指定して起動した場合、バッテリバックアップ対応カ�
 | **Left**  | `Left Arrow`       | `Left Arrow` |
 | **Right** | `Right Arrow`      | `Right Arrow` |
 | **Exit**  | `Esc`              | -          |
+| **Quick Save State** | `F5`   | -          |
+| **Quick Load State** | `F8`   | -          |
+| **Save/Rewind Menu** | `Tab` or `RT+LT` | - |
 
 デスクトップ版はゲームコントローラにも対応しています。既定では `D-Pad` または左スティックで移動し、`South` ボタンが NES の `A`、`West` ボタンが NES の `B`、`Start` / `Select` がそのまま `Start` / `Select` に割り当てられます。キーボードとゲームコントローラは同時に使えます。
+デスクトップ版はマルチスロットのステートセーブにも対応しています。`Tab` または `RT+LT` でメニューを開くとゲームが一時停止し、8 個のスロットを `Up/Down/Left/Right` で選択できます。`Z` で保存、`X` で読込、`Esc` で閉じます。読込後は自動的にメニューを閉じます。既存スロットへ保存する場合は `Left/Right` で `YES` / `NO` を選び、`Z` で確定、`X` でキャンセルします。各ステートは ROM ごとにディスクへ保存され、サムネイルと保存日時が付きます。`F5` / `F8` によるクイックセーブ / クイックロードも引き続き利用できます。
 
 ## プロジェクト構造
 - `src/main.rs`: デスクトップ向けハードウェアインターフェース（pixels + cpal）。

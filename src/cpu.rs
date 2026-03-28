@@ -1,5 +1,7 @@
 use crate::bus::Bus;
+use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Cpu {
     pub a: u8,
     pub x: u8,
