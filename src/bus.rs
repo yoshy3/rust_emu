@@ -32,6 +32,12 @@ pub struct Bus {
     pub mmc3_bank_select: u8,
     pub mmc3_bank_data: [u8; 8],
     pub mmc3_prg_ram_protect: u8,
+    // VRC3 (Mapper 73) state
+    pub vrc3_prg_bank: u8,
+    pub vrc3_irq_latch: u16,
+    pub vrc3_irq_control: u8,
+    pub vrc3_irq_counter: u16,
+    pub vrc3_irq_pending: bool,
     // VRC4 (Mapper 21/23/25) state
     pub vrc4_prg_bank0: u8,
     pub vrc4_prg_bank1: u8,
@@ -81,6 +87,11 @@ impl Bus {
             mmc3_bank_select: 0,
             mmc3_bank_data: [0; 8],
             mmc3_prg_ram_protect: 0x80, // PRG RAM enabled by default
+            vrc3_prg_bank: 0,
+            vrc3_irq_latch: 0,
+            vrc3_irq_control: 0,
+            vrc3_irq_counter: 0,
+            vrc3_irq_pending: false,
             vrc4_prg_bank0: 0,
             vrc4_prg_bank1: 0,
             vrc4_prg_swap: false,
@@ -194,6 +205,8 @@ impl Bus {
                     self.write_mmc1(addr, data);
                 } else if self.mapper == 4 {
                     self.write_mmc3(addr, data);
+                } else if self.mapper == 73 {
+                    self.write_vrc3(addr, data);
                 } else if self.mapper == 21 || self.mapper == 23 || self.mapper == 25 {
                     self.write_vrc4(addr, data);
                 }
@@ -230,6 +243,11 @@ impl Bus {
         self.mmc3_bank_select = 0;
         self.mmc3_bank_data = [0; 8];
         self.mmc3_prg_ram_protect = 0x80;
+        self.vrc3_prg_bank = 0;
+        self.vrc3_irq_latch = 0;
+        self.vrc3_irq_control = 0;
+        self.vrc3_irq_counter = 0;
+        self.vrc3_irq_pending = false;
         self.ppu.mmc3_bank_select = 0;
         self.ppu.mmc3_bank_data = [0; 8];
         self.ppu.mmc3_irq_counter = 0;
@@ -325,6 +343,10 @@ impl Bus {
 
         if self.mapper == 4 {
             return self.read_prg_rom_mmc3(addr as usize);
+        }
+
+        if self.mapper == 73 {
+            return self.read_prg_rom_vrc3(addr as usize);
         }
 
         if self.mapper == 21 || self.mapper == 23 || self.mapper == 25 {
@@ -544,6 +566,81 @@ impl Bus {
 
     /// Translate the raw CPU address into a canonical VRC4 register address.
     /// Different mapper numbers use different address lines for the low 2 bits.
+    fn write_vrc3(&mut self, addr: u16, data: u8) {
+        match addr {
+            0x8000..=0x8FFF => {
+                self.vrc3_irq_latch = (self.vrc3_irq_latch & 0xFFF0) | (data as u16 & 0x000F);
+            }
+            0x9000..=0x9FFF => {
+                self.vrc3_irq_latch =
+                    (self.vrc3_irq_latch & 0xFF0F) | ((data as u16 & 0x000F) << 4);
+            }
+            0xA000..=0xAFFF => {
+                self.vrc3_irq_latch =
+                    (self.vrc3_irq_latch & 0xF0FF) | ((data as u16 & 0x000F) << 8);
+            }
+            0xB000..=0xBFFF => {
+                self.vrc3_irq_latch =
+                    (self.vrc3_irq_latch & 0x0FFF) | ((data as u16 & 0x000F) << 12);
+            }
+            0xC000..=0xCFFF => {
+                self.vrc3_irq_control = data & 0x07;
+                if (self.vrc3_irq_control & 0x02) != 0 {
+                    self.vrc3_irq_counter = self.vrc3_irq_latch;
+                }
+                self.vrc3_irq_pending = false;
+            }
+            0xD000..=0xDFFF => {
+                self.vrc3_irq_pending = false;
+                let ack_enable = (self.vrc3_irq_control & 0x01) << 1;
+                self.vrc3_irq_control = (self.vrc3_irq_control & !0x02) | ack_enable;
+            }
+            0xF000..=0xFFFF => {
+                self.vrc3_prg_bank = data & 0x07;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn clock_vrc3_irq(&mut self) {
+        if (self.vrc3_irq_control & 0x02) == 0 {
+            return;
+        }
+
+        let mode_8bit = (self.vrc3_irq_control & 0x04) != 0;
+        if mode_8bit {
+            let low = self.vrc3_irq_counter as u8;
+            if low == 0xFF {
+                self.vrc3_irq_counter =
+                    (self.vrc3_irq_counter & 0xFF00) | (self.vrc3_irq_latch & 0x00FF);
+                self.vrc3_irq_pending = true;
+            } else {
+                self.vrc3_irq_counter =
+                    (self.vrc3_irq_counter & 0xFF00) | (low.wrapping_add(1) as u16);
+            }
+        } else if self.vrc3_irq_counter == 0xFFFF {
+            self.vrc3_irq_counter = self.vrc3_irq_latch;
+            self.vrc3_irq_pending = true;
+        } else {
+            self.vrc3_irq_counter = self.vrc3_irq_counter.wrapping_add(1);
+        }
+    }
+
+    fn read_prg_rom_vrc3(&self, addr: usize) -> u8 {
+        if self.prg_rom.is_empty() {
+            return 0;
+        }
+
+        let bank_16k = 0x4000usize;
+        let num_16k_banks = (self.prg_rom.len() / bank_16k).max(1);
+        let bank = match addr {
+            0x0000..=0x3FFF => self.vrc3_prg_bank as usize % num_16k_banks,
+            _ => num_16k_banks - 1,
+        };
+        let offset = bank * bank_16k + (addr & 0x3FFF);
+        self.prg_rom[offset % self.prg_rom.len()]
+    }
+
     fn vrc4_translate_addr(&self, addr: u16) -> u16 {
         let base = addr & 0xF000;
         let bits = match self.mapper {
@@ -874,6 +971,15 @@ mod tests {
         Bus::new(ppu, prg_rom, 3, 8192, false)
     }
 
+    fn create_test_bus_mapper_73() -> Bus {
+        let ppu = Ppu::new(Mirroring::Horizontal, vec![]);
+        let mut prg_rom = Vec::with_capacity(128 * 1024);
+        for bank in 0..8u8 {
+            prg_rom.extend(vec![bank; 16384]);
+        }
+        Bus::new(ppu, prg_rom, 73, 8192, false)
+    }
+
     #[test]
     fn test_mapper_3_chr_bank_switching() {
         let mut bus = create_test_bus_mapper_3();
@@ -907,5 +1013,60 @@ mod tests {
         bus.ppu.read_register(0x2007); // buff
         let val2 = bus.ppu.read_register(0x2007);
         assert_eq!(val2, 2); // Bank 2 data
+    }
+
+    #[test]
+    fn test_mapper_73_prg_bank_switching() {
+        let mut bus = create_test_bus_mapper_73();
+
+        assert_eq!(bus.read(0x8000), 0);
+        assert_eq!(bus.read(0xBFFF), 0);
+        assert_eq!(bus.read(0xC000), 7);
+        assert_eq!(bus.read(0xFFFF), 7);
+
+        bus.write(0xF000, 3);
+        assert_eq!(bus.read(0x8000), 3);
+        assert_eq!(bus.read(0xBFFF), 3);
+        assert_eq!(bus.read(0xC000), 7);
+        assert_eq!(bus.read(0xFFFF), 7);
+    }
+
+    #[test]
+    fn test_mapper_73_irq_16bit_reload_and_ack() {
+        let mut bus = create_test_bus_mapper_73();
+
+        bus.write(0x8000, 0x0F);
+        bus.write(0x9000, 0x0F);
+        bus.write(0xA000, 0x0F);
+        bus.write(0xB000, 0x0F);
+        bus.write(0xC000, 0x02);
+
+        assert_eq!(bus.vrc3_irq_counter, 0xFFFF);
+        assert!(!bus.vrc3_irq_pending);
+
+        bus.clock_vrc3_irq();
+        assert_eq!(bus.vrc3_irq_counter, 0xFFFF);
+        assert!(bus.vrc3_irq_pending);
+
+        bus.write(0xD000, 0x00);
+        assert!(!bus.vrc3_irq_pending);
+        assert_eq!(bus.vrc3_irq_control & 0x02, 0);
+    }
+
+    #[test]
+    fn test_mapper_73_irq_8bit_uses_low_byte_only() {
+        let mut bus = create_test_bus_mapper_73();
+
+        bus.write(0x8000, 0x0F);
+        bus.write(0x9000, 0x0F);
+        bus.write(0xA000, 0x03);
+        bus.write(0xB000, 0x02);
+        bus.write(0xC000, 0x06);
+
+        assert_eq!(bus.vrc3_irq_counter, 0x23FF);
+
+        bus.clock_vrc3_irq();
+        assert_eq!(bus.vrc3_irq_counter, 0x23FF);
+        assert!(bus.vrc3_irq_pending);
     }
 }
