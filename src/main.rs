@@ -71,6 +71,12 @@ const SAVE_SLOT_ROWS: usize = 2;
 const SAVE_SLOT_COUNT: usize = SAVE_SLOT_COLUMNS * SAVE_SLOT_ROWS;
 const THUMBNAIL_WIDTH: usize = 128;
 const THUMBNAIL_HEIGHT: usize = 120;
+const REWIND_CAPTURE_EVERY_FRAMES: usize = 30;
+const REWIND_HISTORY_FRAMES: usize = 150;
+const REWIND_VISIBLE_FRAMES: usize = 5;
+const REWIND_STEP_SECONDS: f32 = 0.5;
+const REWIND_REPEAT_DELAY: Duration = Duration::from_millis(300);
+const REWIND_REPEAT_INTERVAL: Duration = Duration::from_millis(90);
 const MENU_COMBO_GRACE_PERIOD: Duration = Duration::from_millis(250);
 const XBOX_MAC_BUTTON_A_CODE: u32 = (9 << 16) | 1;
 const XBOX_MAC_BUTTON_X_CODE: u32 = (9 << 16) | 4;
@@ -103,9 +109,24 @@ struct SaveSlotPreview {
     texture: Option<TextureHandle>,
 }
 
+struct RewindFrame {
+    snapshot: NesSnapshot,
+    thumbnail_rgba: Vec<u8>,
+    elapsed_seconds: f32,
+    texture: Option<TextureHandle>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuFocus {
+    SaveSlots,
+    Rewind,
+}
+
 struct SaveMenu {
     visible: bool,
+    focus: MenuFocus,
     selected_slot: usize,
+    selected_rewind: usize,
     confirm_overwrite: bool,
     confirm_yes_selected: bool,
     close_after_load_release: bool,
@@ -118,7 +139,9 @@ impl SaveMenu {
     fn new(save_dir: PathBuf) -> Self {
         let mut menu = Self {
             visible: false,
+            focus: MenuFocus::SaveSlots,
             selected_slot: 0,
+            selected_rewind: 0,
             confirm_overwrite: false,
             confirm_yes_selected: false,
             close_after_load_release: false,
@@ -150,8 +173,10 @@ impl SaveMenu {
             .collect();
     }
 
-    fn open(&mut self) {
+    fn open(&mut self, rewind_len: usize) {
         self.visible = true;
+        self.focus = MenuFocus::SaveSlots;
+        self.selected_rewind = rewind_len.saturating_sub(1);
         self.confirm_overwrite = false;
         self.confirm_yes_selected = false;
         self.close_after_load_release = false;
@@ -161,6 +186,7 @@ impl SaveMenu {
 
     fn close(&mut self) {
         self.visible = false;
+        self.focus = MenuFocus::SaveSlots;
         self.confirm_overwrite = false;
         self.confirm_yes_selected = false;
         self.close_after_load_release = false;
@@ -170,10 +196,62 @@ impl SaveMenu {
     fn move_selection(&mut self, row_delta: isize, col_delta: isize) {
         let row = self.selected_slot / SAVE_SLOT_COLUMNS;
         let col = self.selected_slot % SAVE_SLOT_COLUMNS;
-        let next_row = ((row as isize + row_delta).rem_euclid(SAVE_SLOT_ROWS as isize)) as usize;
+        let next_row = if row_delta > 0 {
+            (row + 1).min(SAVE_SLOT_ROWS - 1)
+        } else if row_delta < 0 {
+            row.saturating_sub(1)
+        } else {
+            row
+        };
         let next_col =
             ((col as isize + col_delta).rem_euclid(SAVE_SLOT_COLUMNS as isize)) as usize;
         self.selected_slot = next_row * SAVE_SLOT_COLUMNS + next_col;
+        self.focus = MenuFocus::SaveSlots;
+        self.confirm_overwrite = false;
+        self.confirm_yes_selected = false;
+        self.close_after_load_release = false;
+        self.status_message.clear();
+    }
+
+    fn move_focus_vertical(&mut self, delta: isize, rewind_len: usize) {
+        match self.focus {
+            MenuFocus::SaveSlots if delta > 0 => {
+                let row = self.selected_slot / SAVE_SLOT_COLUMNS;
+                if row + 1 < SAVE_SLOT_ROWS {
+                    self.move_selection(1, 0);
+                    return;
+                }
+                if rewind_len > 0 {
+                    self.focus = MenuFocus::Rewind;
+                    self.selected_rewind = self.selected_rewind.min(rewind_len.saturating_sub(1));
+                }
+            }
+            MenuFocus::Rewind if delta < 0 => {
+                self.focus = MenuFocus::SaveSlots;
+            }
+            MenuFocus::SaveSlots if delta < 0 => {
+                let row = self.selected_slot / SAVE_SLOT_COLUMNS;
+                if row > 0 {
+                    self.move_selection(-1, 0);
+                    return;
+                }
+            }
+            _ => {}
+        }
+        self.confirm_overwrite = false;
+        self.confirm_yes_selected = false;
+        self.close_after_load_release = false;
+        self.status_message.clear();
+    }
+
+    fn move_rewind_selection(&mut self, delta: isize, rewind_len: usize) {
+        if rewind_len == 0 {
+            self.status_message = "NO REWIND HISTORY".to_string();
+            return;
+        }
+        let len = rewind_len as isize;
+        self.selected_rewind = ((self.selected_rewind as isize + delta).clamp(0, len - 1)) as usize;
+        self.focus = MenuFocus::Rewind;
         self.confirm_overwrite = false;
         self.confirm_yes_selected = false;
         self.close_after_load_release = false;
@@ -224,6 +302,19 @@ impl SaveMenu {
         self.close_after_load_release = false;
         self.status_message = "STATE LOADED".to_string();
         Ok(Some(slot.snapshot))
+    }
+
+    fn load_selected_rewind(&mut self, rewind_frames: &[RewindFrame]) -> Option<NesSnapshot> {
+        if rewind_frames.is_empty() {
+            self.status_message = "NO REWIND HISTORY".to_string();
+            return None;
+        }
+        let frame = rewind_frames.get(self.selected_rewind)?;
+        self.confirm_overwrite = false;
+        self.confirm_yes_selected = false;
+        self.close_after_load_release = false;
+        self.status_message = format!("REWOUND {:.1}s", frame.elapsed_seconds);
+        Some(frame.snapshot.clone())
     }
 }
 
@@ -276,6 +367,14 @@ fn format_saved_at(saved_at_unix: i64) -> String {
         .unwrap_or_else(|| "UNKNOWN".to_string())
 }
 
+fn format_elapsed_seconds(elapsed_seconds: f32) -> String {
+    if elapsed_seconds < 1.0 {
+        format!("{elapsed_seconds:.1}s ago")
+    } else {
+        format!("{elapsed_seconds:.0}s ago")
+    }
+}
+
 fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     let t = t.clamp(0.0, 1.0);
     let lerp = |start: u8, end: u8| -> u8 {
@@ -289,13 +388,15 @@ fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     )
 }
 
-fn show_save_menu_egui(ctx: &egui::Context, menu: &mut SaveMenu) {
+fn show_save_menu_egui(
+    ctx: &egui::Context,
+    menu: &mut SaveMenu,
+    rewind_frames: &mut VecDeque<RewindFrame>,
+) {
     let screen_rect = ctx.input(|input| input.screen_rect());
-    let pixels_per_point = ctx.pixels_per_point().max(1.0);
-    let thumbnail_size = egui::vec2(256.0 / pixels_per_point, 180.0 / pixels_per_point);
     let window_size = egui::vec2(
-        (screen_rect.width() - 48.0).min(940.0),
-        (screen_rect.height() - 48.0).min(740.0),
+        (screen_rect.width() - 88.0).min(900.0),
+        (screen_rect.height() - 64.0).min(720.0),
     );
 
     egui::Area::new("save_menu_scrim")
@@ -330,13 +431,23 @@ fn show_save_menu_egui(ctx: &egui::Context, menu: &mut SaveMenu) {
                     .color(egui::Color32::from_rgb(220, 228, 242)),
             );
             ui.add_space(4.0);
+            let slot_spacing = 10.0;
+            let slot_width = ((ui.available_width()
+                - slot_spacing * (SAVE_SLOT_COLUMNS.saturating_sub(1) as f32))
+                / SAVE_SLOT_COLUMNS as f32)
+                .max(88.0)
+                - 2.0;
+            let slot_thumbnail_size = egui::vec2(
+                (slot_width - 16.0).max(72.0),
+                ((slot_width - 16.0).max(72.0) * 180.0 / 256.0).max(50.0),
+            );
 
             egui::Grid::new("save_slot_grid")
                 .num_columns(SAVE_SLOT_COLUMNS)
-                .spacing(egui::vec2(10.0, 10.0))
+                .spacing(egui::vec2(slot_spacing, 10.0))
                 .show(ui, |ui| {
                     for (index, slot) in menu.slots.iter_mut().enumerate() {
-                        let selected = index == menu.selected_slot;
+                        let selected = menu.focus == MenuFocus::SaveSlots && index == menu.selected_slot;
                         let selected_t = ctx.animate_bool(
                             egui::Id::new(("save_slot_selected", index)),
                             selected,
@@ -359,12 +470,12 @@ fn show_save_menu_egui(ctx: &egui::Context, menu: &mut SaveMenu) {
                             .stroke(stroke)
                             .inner_margin(egui::Margin::same(8.0))
                             .show(ui, |ui| {
-                                ui.set_min_width(thumbnail_size.x + 16.0);
+                                ui.set_min_width(slot_width);
                                 ui.vertical(|ui| {
                                     ui.label(
                                         RichText::new(format!("SLOT {}", index + 1))
                                             .strong()
-                                            .size(18.0)
+                                            .size(16.0)
                                             .color(egui::Color32::from_rgb(240, 244, 255)),
                                     );
                                     ui.add_space(2.0);
@@ -382,17 +493,17 @@ fn show_save_menu_egui(ctx: &egui::Context, menu: &mut SaveMenu) {
                                             ));
                                         }
                                         if let Some(texture) = &slot.texture {
-                                            ui.image(texture, thumbnail_size);
+                                            ui.image(texture, slot_thumbnail_size);
                                         }
                                         ui.add_space(2.0);
                                         ui.label(
                                             RichText::new(format_saved_at(slot.saved_at_unix))
-                                                .size(14.0)
+                                                .size(13.0)
                                                 .color(egui::Color32::from_rgb(224, 230, 244)),
                                         );
                                     } else {
                                         let (rect, _) = ui.allocate_exact_size(
-                                            thumbnail_size,
+                                            slot_thumbnail_size,
                                             egui::Sense::hover(),
                                         );
                                         ui.painter().rect_filled(
@@ -404,13 +515,13 @@ fn show_save_menu_egui(ctx: &egui::Context, menu: &mut SaveMenu) {
                                             rect.center(),
                                             egui::Align2::CENTER_CENTER,
                                             "EMPTY",
-                                            egui::FontId::proportional(18.0),
+                                            egui::FontId::proportional(16.0),
                                             egui::Color32::from_rgb(190, 200, 220),
                                         );
                                         ui.add_space(2.0);
                                         ui.label(
                                             RichText::new("No save data")
-                                                .size(14.0)
+                                                .size(13.0)
                                                 .color(egui::Color32::from_rgb(214, 222, 238)),
                                         );
                                     }
@@ -423,9 +534,127 @@ fn show_save_menu_egui(ctx: &egui::Context, menu: &mut SaveMenu) {
                     }
                 });
 
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            if rewind_frames.is_empty() {
+                ui.label(
+                    RichText::new("Rewind")
+                        .size(18.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(240, 244, 255)),
+                );
+                ui.label(
+                    RichText::new("No rewind history yet. Resume the game to start recording snapshots.")
+                        .size(15.0)
+                        .color(egui::Color32::from_rgb(214, 222, 238)),
+                );
+            } else {
+                let visible = REWIND_VISIBLE_FRAMES.min(rewind_frames.len());
+                let half = visible / 2;
+                let max_start = rewind_frames.len().saturating_sub(visible);
+                let start = menu
+                    .selected_rewind
+                    .saturating_sub(half)
+                    .min(max_start);
+                let end = start + visible;
+                let selected_elapsed = rewind_frames
+                    .get(menu.selected_rewind)
+                    .map(|frame| format_elapsed_seconds(frame.elapsed_seconds))
+                    .unwrap_or_else(|| "now".to_string());
+                let rewind_spacing = 8.0;
+                let rewind_card_width = ((ui.available_width()
+                    - rewind_spacing * (visible.saturating_sub(1) as f32))
+                    / (visible as f32 + 1.0))
+                    .max(72.0);
+                let rewind_base_thumb_width = (rewind_card_width - 12.0).max(60.0);
+                let rewind_base_thumb_size = egui::vec2(
+                    rewind_base_thumb_width,
+                    (rewind_base_thumb_width * 180.0 / 256.0).max(42.0),
+                );
+
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Rewind")
+                            .size(18.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(240, 244, 255)),
+                    );
+                    ui.label(
+                        RichText::new(format!("Selected: {selected_elapsed}"))
+                            .size(15.0)
+                            .color(egui::Color32::from_rgb(214, 222, 238)),
+                    );
+                });
+
+                ui.horizontal(|ui| {
+                    for index in start..end {
+                        let frame = &mut rewind_frames[index];
+                        let selected = menu.focus == MenuFocus::Rewind && index == menu.selected_rewind;
+                        let selected_t =
+                            ctx.animate_bool(egui::Id::new(("rewind_selected", index)), selected);
+                        let fill = lerp_color(
+                            egui::Color32::from_rgb(43, 50, 68),
+                            egui::Color32::from_rgb(88, 126, 214),
+                            selected_t,
+                        );
+                        let stroke = egui::Stroke::new(
+                            egui::lerp(1.0..=2.5, selected_t),
+                            lerp_color(
+                                egui::Color32::from_rgb(76, 88, 118),
+                                egui::Color32::from_rgb(245, 212, 110),
+                                selected_t,
+                            ),
+                        );
+                        egui::Frame::group(ui.style())
+                            .fill(fill)
+                            .stroke(stroke)
+                            .inner_margin(egui::Margin::same(6.0))
+                            .show(ui, |ui| {
+                                let scale = egui::lerp(1.0..=2.0, selected_t);
+                                let rewind_thumb_size = rewind_base_thumb_size * scale;
+                                if frame.texture.is_none() {
+                                    let image = ColorImage::from_rgba_unmultiplied(
+                                        [THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT],
+                                        &frame.thumbnail_rgba,
+                                    );
+                                    frame.texture = Some(ctx.load_texture(
+                                        format!("rewind_thumb_{}", index),
+                                        image,
+                                        egui::TextureOptions::LINEAR,
+                                    ));
+                                }
+                                let (preview_rect, _) = ui.allocate_exact_size(
+                                    rewind_base_thumb_size,
+                                    egui::Sense::hover(),
+                                );
+                                if let Some(texture) = &frame.texture {
+                                    let mut center_x = preview_rect.center().x;
+                                    if index == start {
+                                        center_x = preview_rect.left() + rewind_thumb_size.x * 0.5;
+                                    } else if index + 1 == end {
+                                        center_x = preview_rect.right() - rewind_thumb_size.x * 0.5;
+                                    }
+                                    let image_rect = egui::Rect::from_center_size(
+                                        egui::pos2(
+                                            center_x,
+                                            preview_rect.bottom() - rewind_thumb_size.y * 0.5,
+                                        ),
+                                        rewind_thumb_size,
+                                    );
+                                    ui.put(image_rect, egui::Image::new(texture, rewind_thumb_size));
+                                }
+                            });
+                    }
+                });
+            }
+
             ui.separator();
             ui.label(
-                RichText::new("Up/Down/Left/Right: Select slot   Z: Save   X: Load   Esc: Close")
+                RichText::new(
+                    "Up/Down: Section   Left/Right: Select   Z: Save slot   X: Load/rewind   Esc: Close",
+                )
                     .size(16.0)
                     .color(egui::Color32::from_rgb(232, 238, 250)),
             );
@@ -923,6 +1152,8 @@ fn main() -> Result<()> {
     let mut last_frame_time = Instant::now();
     let frame_duration = Duration::from_nanos(16639267); // NES NTSC ~60.098 Hz
     let mut save_state_slot: Option<NesSnapshot> = None;
+    let mut rewind_frames: VecDeque<RewindFrame> = VecDeque::with_capacity(REWIND_HISTORY_FRAMES);
+    let mut rewind_capture_counter: usize = 0;
     let mut save_menu = SaveMenu::new(state_dir);
     let mut prev_menu_combo_held = false;
     let mut prev_menu_up_held = false;
@@ -931,6 +1162,9 @@ fn main() -> Result<()> {
     let mut prev_menu_right_held = false;
     let mut prev_menu_confirm_held = false;
     let mut prev_menu_load_held = false;
+    let mut rewind_repeat_direction: isize = 0;
+    let mut rewind_repeat_started_at: Option<Instant> = None;
+    let mut rewind_repeat_last_at: Option<Instant> = None;
 
     // WAV dump buffer: (raw, filtered) stereo pairs
     let mut wav_samples: Vec<(f32, f32)> = Vec::new();
@@ -967,7 +1201,7 @@ fn main() -> Result<()> {
                 let full_output = if save_menu.visible {
                     let raw_input = egui_state.take_egui_input(&window);
                     let output = egui_ctx.run(raw_input, |ctx| {
-                        show_save_menu_egui(ctx, &mut save_menu);
+                        show_save_menu_egui(ctx, &mut save_menu, &mut rewind_frames);
                     });
                     egui_state.handle_platform_output(&window, &egui_ctx, output.platform_output.clone());
                     Some(output)
@@ -1068,7 +1302,7 @@ fn main() -> Result<()> {
             let menu_load_held =
                 input.key_held(VirtualKeyCode::X) || gamepad_held(JoypadButton::BUTTON_B);
 
-            if (input_updated || gamepad_changed)
+                if (input_updated || gamepad_changed)
                 && (input.key_pressed(VirtualKeyCode::Tab)
                     || gamepad_menu_combo_pressed
                     || (menu_combo_held && !prev_menu_combo_held))
@@ -1077,7 +1311,7 @@ fn main() -> Result<()> {
                 if save_menu.visible {
                     save_menu.close();
                 } else {
-                    save_menu.open();
+                    save_menu.open(rewind_frames.len());
                     prev_menu_up_held = menu_up_held;
                     prev_menu_down_held = menu_down_held;
                     prev_menu_left_held = menu_left_held;
@@ -1090,7 +1324,7 @@ fn main() -> Result<()> {
             prev_menu_combo_held = menu_combo_held;
 
             // Handle input events
-            if input_updated || gamepad_changed {
+            if input_updated || gamepad_changed || save_menu.visible {
                 if input.key_pressed(VirtualKeyCode::Escape) || input.close_requested() {
                     if save_menu.visible {
                         save_menu.close();
@@ -1108,6 +1342,46 @@ fn main() -> Result<()> {
                 }
 
                 if save_menu.visible {
+                    let mut rewind_repeat_step: Option<isize> = None;
+                    if save_menu.focus == MenuFocus::Rewind
+                        && !save_menu.confirm_overwrite
+                        && !save_menu.close_after_load_release
+                    {
+                        let held_direction = match (menu_left_held, menu_right_held) {
+                            (true, false) => Some(-1),
+                            (false, true) => Some(1),
+                            _ => None,
+                        };
+
+                        if let Some(direction) = held_direction {
+                            let just_pressed =
+                                (direction < 0 && !prev_menu_left_held) || (direction > 0 && !prev_menu_right_held);
+                            let now = Instant::now();
+                            if just_pressed || rewind_repeat_direction != direction {
+                                rewind_repeat_direction = direction;
+                                rewind_repeat_started_at = Some(now);
+                                rewind_repeat_last_at = Some(now);
+                            } else if let (Some(started_at), Some(last_at)) =
+                                (rewind_repeat_started_at, rewind_repeat_last_at)
+                            {
+                                if now.duration_since(started_at) >= REWIND_REPEAT_DELAY
+                                    && now.duration_since(last_at) >= REWIND_REPEAT_INTERVAL
+                                {
+                                    rewind_repeat_step = Some(direction);
+                                    rewind_repeat_last_at = Some(now);
+                                }
+                            }
+                        } else {
+                            rewind_repeat_direction = 0;
+                            rewind_repeat_started_at = None;
+                            rewind_repeat_last_at = None;
+                        }
+                    } else {
+                        rewind_repeat_direction = 0;
+                        rewind_repeat_started_at = None;
+                        rewind_repeat_last_at = None;
+                    }
+
                     if save_menu.close_after_load_release && !menu_load_held {
                         save_menu.close();
                         window.request_redraw();
@@ -1116,28 +1390,43 @@ fn main() -> Result<()> {
                         && menu_up_held
                         && !prev_menu_up_held
                     {
-                        save_menu.move_selection(-1, 0);
+                        match save_menu.focus {
+                            MenuFocus::SaveSlots => save_menu.move_selection(-1, 0),
+                            MenuFocus::Rewind => save_menu.move_focus_vertical(-1, rewind_frames.len()),
+                        }
                         window.request_redraw();
                     } else if !save_menu.close_after_load_release
                         && !save_menu.confirm_overwrite
                         && menu_down_held
                         && !prev_menu_down_held
                     {
-                        save_menu.move_selection(1, 0);
+                        match save_menu.focus {
+                            MenuFocus::SaveSlots => save_menu.move_focus_vertical(1, rewind_frames.len()),
+                            MenuFocus::Rewind => {}
+                        }
                         window.request_redraw();
                     } else if !save_menu.close_after_load_release
                         && !save_menu.confirm_overwrite
                         && menu_left_held
                         && !prev_menu_left_held
                     {
-                        save_menu.move_selection(0, -1);
+                        match save_menu.focus {
+                            MenuFocus::SaveSlots => save_menu.move_selection(0, -1),
+                            MenuFocus::Rewind => save_menu.move_rewind_selection(-1, rewind_frames.len()),
+                        }
+                        window.request_redraw();
+                    } else if let Some(step) = rewind_repeat_step {
+                        save_menu.move_rewind_selection(step, rewind_frames.len());
                         window.request_redraw();
                     } else if !save_menu.close_after_load_release
                         && !save_menu.confirm_overwrite
                         && menu_right_held
                         && !prev_menu_right_held
                     {
-                        save_menu.move_selection(0, 1);
+                        match save_menu.focus {
+                            MenuFocus::SaveSlots => save_menu.move_selection(0, 1),
+                            MenuFocus::Rewind => save_menu.move_rewind_selection(1, rewind_frames.len()),
+                        }
                         window.request_redraw();
                     }
                     if save_menu.confirm_overwrite && !save_menu.close_after_load_release {
@@ -1164,8 +1453,15 @@ fn main() -> Result<()> {
                     prev_menu_load_held = menu_load_held;
 
                     if !save_menu.close_after_load_release && menu_confirm_pressed {
-                        if let Err(err) = save_menu.save_selected(&nes) {
-                            save_menu.status_message = format!("SAVE FAILED: {}", err);
+                        match save_menu.focus {
+                            MenuFocus::SaveSlots => {
+                                if let Err(err) = save_menu.save_selected(&nes) {
+                                    save_menu.status_message = format!("SAVE FAILED: {}", err);
+                                }
+                            }
+                            MenuFocus::Rewind => {
+                                save_menu.status_message = "SELECT A SAVE SLOT TO STORE".to_string();
+                            }
                         }
                         window.request_redraw();
                     }
@@ -1175,16 +1471,27 @@ fn main() -> Result<()> {
                             save_menu.confirm_yes_selected = false;
                             save_menu.status_message = "SAVE CANCELED".to_string();
                         } else {
-                            match save_menu.load_selected() {
-                                Ok(Some(snapshot)) => {
-                                    nes.load_state(&snapshot);
-                                    save_state_slot = Some(snapshot);
-                                    audio_buffer.lock().unwrap().clear();
-                                    last_frame_time = Instant::now();
-                                    save_menu.close_after_load_release = true;
+                            match save_menu.focus {
+                                MenuFocus::SaveSlots => match save_menu.load_selected() {
+                                    Ok(Some(snapshot)) => {
+                                        nes.load_state(&snapshot);
+                                        save_state_slot = Some(snapshot);
+                                        audio_buffer.lock().unwrap().clear();
+                                        last_frame_time = Instant::now();
+                                        save_menu.close_after_load_release = true;
+                                    }
+                                    Ok(None) => {}
+                                    Err(err) => save_menu.status_message = format!("LOAD FAILED: {}", err),
+                                },
+                                MenuFocus::Rewind => {
+                                    if let Some(snapshot) = save_menu.load_selected_rewind(rewind_frames.make_contiguous()) {
+                                        nes.load_state(&snapshot);
+                                        save_state_slot = Some(snapshot);
+                                        audio_buffer.lock().unwrap().clear();
+                                        last_frame_time = Instant::now();
+                                        save_menu.close_after_load_release = true;
+                                    }
                                 }
-                                Ok(None) => {}
-                                Err(err) => save_menu.status_message = format!("LOAD FAILED: {}", err),
                             }
                         }
                         window.request_redraw();
@@ -1290,6 +1597,22 @@ fn main() -> Result<()> {
                 // Avoid "death spiral" if the computer is too slow
                 if last_frame_time.elapsed() > frame_duration * 2 {
                     last_frame_time = Instant::now();
+                }
+                rewind_capture_counter += 1;
+                if rewind_capture_counter >= REWIND_CAPTURE_EVERY_FRAMES {
+                    rewind_capture_counter = 0;
+                    if rewind_frames.len() == REWIND_HISTORY_FRAMES {
+                        rewind_frames.pop_front();
+                    }
+                    rewind_frames.push_back(RewindFrame {
+                        snapshot: nes.save_state(),
+                        thumbnail_rgba: capture_thumbnail(&nes.bus.ppu.frame_buffer),
+                        elapsed_seconds: 0.0,
+                        texture: None,
+                    });
+                    for (index, frame) in rewind_frames.iter_mut().rev().enumerate() {
+                        frame.elapsed_seconds = index as f32 * REWIND_STEP_SECONDS;
+                    }
                 }
                 window.request_redraw();
             }
