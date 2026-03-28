@@ -64,7 +64,7 @@ When loading a ROM path (e.g. `cargo run -- path/to/game.nes`), battery-backed s
 | **Save/Rewind Menu** | `Tab` or `RT+LT` | - |
 
 The desktop version also supports game controllers. By default, movement is mapped to the `D-Pad` or left stick, the `South` button maps to NES `A`, the `West` button maps to NES `B`, and `Start` / `Select` map directly to `Start` / `Select`. You can use the keyboard and a game controller at the same time.
-The desktop version also supports multi-slot save states. Open the menu with `Tab` or `RT+LT` to pause the game, choose a slot with `Up/Down`, save with `Z`, load with `X`, and close with `Esc`. Saving over an existing slot shows a confirmation warning and requires pressing `Z` again. States are persisted per ROM on disk and include a thumbnail plus save timestamp. `F5` / `F8` quick save and load are still available.
+The desktop version also supports multi-slot save states. Open the menu with `Tab` or `RT+LT` to pause the game, choose one of the eight slots with `Up/Down/Left/Right`, save with `Z`, load with `X`, and close with `Esc`. Loading automatically closes the menu. When saving over an existing slot, choose `YES` or `NO` with `Left/Right`, confirm with `Z`, or cancel with `X`. States are persisted per ROM on disk and include a thumbnail plus save timestamp. `F5` / `F8` quick save and load are still available.
 
 ## Project Structure
 - `src/main.rs`: Desktop hardware interface (pixels + cpal).

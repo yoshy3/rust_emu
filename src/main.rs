@@ -1,7 +1,9 @@
 use anyhow::{Error, Result};
 use chrono::{Local, TimeZone};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use font8x8::UnicodeFonts;
+use egui::{self, ColorImage, RichText, TextureHandle};
+use egui_wgpu::{renderer::ScreenDescriptor, Renderer as EguiRenderer};
+use egui_winit::State as EguiWinitState;
 use gilrs::{Axis, Button, EventType, GamepadId, Gilrs};
 use log::error;
 use pixels::{Pixels, SurfaceTexture};
@@ -64,9 +66,12 @@ const _SAMPLE_RATE: u32 = 44100;
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 240;
 const GAMEPAD_AXIS_THRESHOLD: f32 = 0.5;
-const SAVE_SLOT_COUNT: usize = 3;
-const THUMBNAIL_WIDTH: usize = 64;
-const THUMBNAIL_HEIGHT: usize = 60;
+const SAVE_SLOT_COLUMNS: usize = 4;
+const SAVE_SLOT_ROWS: usize = 2;
+const SAVE_SLOT_COUNT: usize = SAVE_SLOT_COLUMNS * SAVE_SLOT_ROWS;
+const THUMBNAIL_WIDTH: usize = 128;
+const THUMBNAIL_HEIGHT: usize = 120;
+const MENU_COMBO_GRACE_PERIOD: Duration = Duration::from_millis(250);
 const XBOX_MAC_BUTTON_A_CODE: u32 = (9 << 16) | 1;
 const XBOX_MAC_BUTTON_X_CODE: u32 = (9 << 16) | 4;
 const XBOX_MAC_BUTTON_BACK_CODE: u32 = (9 << 16) | 11;
@@ -92,16 +97,18 @@ struct PersistedStateSlot {
     snapshot: NesSnapshot,
 }
 
-#[derive(Clone)]
 struct SaveSlotPreview {
     saved_at_unix: i64,
     thumbnail_rgba: Vec<u8>,
+    texture: Option<TextureHandle>,
 }
 
 struct SaveMenu {
     visible: bool,
     selected_slot: usize,
     confirm_overwrite: bool,
+    confirm_yes_selected: bool,
+    close_after_load_release: bool,
     status_message: String,
     save_dir: PathBuf,
     slots: Vec<Option<SaveSlotPreview>>,
@@ -113,9 +120,11 @@ impl SaveMenu {
             visible: false,
             selected_slot: 0,
             confirm_overwrite: false,
+            confirm_yes_selected: false,
+            close_after_load_release: false,
             status_message: String::new(),
             save_dir,
-            slots: vec![None; SAVE_SLOT_COUNT],
+            slots: (0..SAVE_SLOT_COUNT).map(|_| None).collect(),
         };
         menu.refresh_slots();
         menu
@@ -134,7 +143,8 @@ impl SaveMenu {
                     .and_then(|bytes| bincode::deserialize::<PersistedStateSlot>(&bytes).ok())
                     .map(|slot| SaveSlotPreview {
                         saved_at_unix: slot.saved_at_unix,
-                        thumbnail_rgba: slot.thumbnail_rgba,
+                        thumbnail_rgba: normalize_thumbnail_rgba(slot.thumbnail_rgba),
+                        texture: None,
                     })
             })
             .collect();
@@ -143,6 +153,8 @@ impl SaveMenu {
     fn open(&mut self) {
         self.visible = true;
         self.confirm_overwrite = false;
+        self.confirm_yes_selected = false;
+        self.close_after_load_release = false;
         self.status_message.clear();
         self.refresh_slots();
     }
@@ -150,20 +162,35 @@ impl SaveMenu {
     fn close(&mut self) {
         self.visible = false;
         self.confirm_overwrite = false;
+        self.confirm_yes_selected = false;
+        self.close_after_load_release = false;
         self.status_message.clear();
     }
 
-    fn move_selection(&mut self, delta: isize) {
-        let len = self.slots.len() as isize;
-        self.selected_slot = ((self.selected_slot as isize + delta).rem_euclid(len)) as usize;
+    fn move_selection(&mut self, row_delta: isize, col_delta: isize) {
+        let row = self.selected_slot / SAVE_SLOT_COLUMNS;
+        let col = self.selected_slot % SAVE_SLOT_COLUMNS;
+        let next_row = ((row as isize + row_delta).rem_euclid(SAVE_SLOT_ROWS as isize)) as usize;
+        let next_col =
+            ((col as isize + col_delta).rem_euclid(SAVE_SLOT_COLUMNS as isize)) as usize;
+        self.selected_slot = next_row * SAVE_SLOT_COLUMNS + next_col;
         self.confirm_overwrite = false;
+        self.confirm_yes_selected = false;
+        self.close_after_load_release = false;
         self.status_message.clear();
     }
 
     fn save_selected(&mut self, nes: &rust_emu::Nes) -> Result<()> {
         if self.slots[self.selected_slot].is_some() && !self.confirm_overwrite {
             self.confirm_overwrite = true;
-            self.status_message = "OVERWRITE? PRESS Z AGAIN".to_string();
+            self.confirm_yes_selected = false;
+            self.status_message = "OVERWRITE THIS SLOT?".to_string();
+            return Ok(());
+        }
+
+        if self.confirm_overwrite && !self.confirm_yes_selected {
+            self.confirm_overwrite = false;
+            self.status_message = "SAVE CANCELED".to_string();
             return Ok(());
         }
 
@@ -176,6 +203,8 @@ impl SaveMenu {
         let bytes = bincode::serialize(&slot).map_err(Error::msg)?;
         std::fs::write(self.slot_path(self.selected_slot), bytes)?;
         self.confirm_overwrite = false;
+        self.confirm_yes_selected = false;
+        self.close_after_load_release = false;
         self.status_message = "STATE SAVED".to_string();
         self.refresh_slots();
         Ok(())
@@ -191,6 +220,8 @@ impl SaveMenu {
         let bytes = std::fs::read(path)?;
         let slot: PersistedStateSlot = bincode::deserialize(&bytes).map_err(Error::msg)?;
         self.confirm_overwrite = false;
+        self.confirm_yes_selected = false;
+        self.close_after_load_release = false;
         self.status_message = "STATE LOADED".to_string();
         Ok(Some(slot.snapshot))
     }
@@ -210,55 +241,31 @@ fn capture_thumbnail(frame: &[u8]) -> Vec<u8> {
     thumbnail
 }
 
-fn blend_rect(frame: &mut [u8], x: usize, y: usize, w: usize, h: usize, color: [u8; 4], alpha: f32) {
-    let max_x = (x + w).min(WIDTH as usize);
-    let max_y = (y + h).min(HEIGHT as usize);
-    for py in y..max_y {
-        for px in x..max_x {
-            let idx = (py * WIDTH as usize + px) * 4;
-            for channel in 0..3 {
-                let src = frame[idx + channel] as f32;
-                let dst = color[channel] as f32;
-                frame[idx + channel] = (src * (1.0 - alpha) + dst * alpha) as u8;
-            }
-            frame[idx + 3] = 0xFF;
-        }
+fn normalize_thumbnail_rgba(thumbnail_rgba: Vec<u8>) -> Vec<u8> {
+    let current_len = THUMBNAIL_WIDTH * THUMBNAIL_HEIGHT * 4;
+    if thumbnail_rgba.len() == current_len {
+        return thumbnail_rgba;
     }
-}
 
-fn blit_thumbnail(frame: &mut [u8], x: usize, y: usize, thumb: &[u8]) {
-    for py in 0..THUMBNAIL_HEIGHT {
-        for px in 0..THUMBNAIL_WIDTH {
-            let dst_x = x + px;
-            let dst_y = y + py;
-            if dst_x >= WIDTH as usize || dst_y >= HEIGHT as usize {
-                continue;
+    let legacy_width = 64usize;
+    let legacy_height = 60usize;
+    let legacy_len = legacy_width * legacy_height * 4;
+    if thumbnail_rgba.len() == legacy_len {
+        let mut upscaled = vec![0u8; current_len];
+        for y in 0..THUMBNAIL_HEIGHT {
+            for x in 0..THUMBNAIL_WIDTH {
+                let src_x = x * legacy_width / THUMBNAIL_WIDTH;
+                let src_y = y * legacy_height / THUMBNAIL_HEIGHT;
+                let src_idx = (src_y * legacy_width + src_x) * 4;
+                let dst_idx = (y * THUMBNAIL_WIDTH + x) * 4;
+                upscaled[dst_idx..dst_idx + 4]
+                    .copy_from_slice(&thumbnail_rgba[src_idx..src_idx + 4]);
             }
-            let src_idx = (py * THUMBNAIL_WIDTH + px) * 4;
-            let dst_idx = (dst_y * WIDTH as usize + dst_x) * 4;
-            frame[dst_idx..dst_idx + 4].copy_from_slice(&thumb[src_idx..src_idx + 4]);
         }
+        return upscaled;
     }
-}
 
-fn draw_text(frame: &mut [u8], x: usize, y: usize, text: &str, color: [u8; 4]) {
-    for (char_index, ch) in text.chars().enumerate() {
-        if let Some(glyph) = font8x8::BASIC_FONTS.get(ch) {
-            for (row, bits) in glyph.iter().enumerate() {
-                for col in 0..8 {
-                    if (bits >> col) & 1 == 1 {
-                        let px = x + char_index * 8 + col;
-                        let py = y + row;
-                        if px >= WIDTH as usize || py >= HEIGHT as usize {
-                            continue;
-                        }
-                        let idx = (py * WIDTH as usize + px) * 4;
-                        frame[idx..idx + 4].copy_from_slice(&color);
-                    }
-                }
-            }
-        }
-    }
+    vec![0u8; current_len]
 }
 
 fn format_saved_at(saved_at_unix: i64) -> String {
@@ -269,45 +276,232 @@ fn format_saved_at(saved_at_unix: i64) -> String {
         .unwrap_or_else(|| "UNKNOWN".to_string())
 }
 
-fn draw_save_menu(frame: &mut [u8], menu: &SaveMenu) {
-    blend_rect(frame, 0, 0, WIDTH as usize, HEIGHT as usize, [10, 12, 20, 0xFF], 0.72);
-    draw_text(frame, 56, 12, "SAVE / REWIND", [0xF8, 0xFA, 0xFC, 0xFF]);
+fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |start: u8, end: u8| -> u8 {
+        egui::lerp(start as f32..=end as f32, t).round() as u8
+    };
+    egui::Color32::from_rgba_unmultiplied(
+        lerp(a.r(), b.r()),
+        lerp(a.g(), b.g()),
+        lerp(a.b(), b.b()),
+        lerp(a.a(), b.a()),
+    )
+}
 
-    for (index, slot) in menu.slots.iter().enumerate() {
-        let y = 32 + index * 64;
-        let selected = index == menu.selected_slot;
-        let bg = if selected {
-            [0x56, 0x7C, 0xB9, 0xFF]
-        } else {
-            [0x22, 0x28, 0x35, 0xFF]
-        };
-        blend_rect(frame, 12, y, 232, 56, bg, if selected { 0.92 } else { 0.82 });
-        draw_text(
-            frame,
-            20,
-            y + 6,
-            &format!("SLOT {}", index + 1),
-            [0xFF, 0xFF, 0xFF, 0xFF],
-        );
+fn show_save_menu_egui(ctx: &egui::Context, menu: &mut SaveMenu) {
+    let screen_rect = ctx.input(|input| input.screen_rect());
+    let pixels_per_point = ctx.pixels_per_point().max(1.0);
+    let thumbnail_size = egui::vec2(256.0 / pixels_per_point, 180.0 / pixels_per_point);
+    let window_size = egui::vec2(
+        (screen_rect.width() - 48.0).min(940.0),
+        (screen_rect.height() - 48.0).min(740.0),
+    );
 
-        if let Some(slot) = slot {
-            blit_thumbnail(frame, 20, y + 18, &slot.thumbnail_rgba);
-            draw_text(
-                frame,
-                96,
-                y + 22,
-                &format_saved_at(slot.saved_at_unix),
-                [0xE2, 0xE8, 0xF0, 0xFF],
+    egui::Area::new("save_menu_scrim")
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(0.0, 0.0))
+        .show(ctx, |ui| {
+            let rect = ui.max_rect();
+            ui.painter().rect_filled(
+                rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(18, 24, 38, 170),
             );
-        } else {
-            blend_rect(frame, 20, y + 18, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT.min(30), [0x08, 0x0A, 0x0F, 0xFF], 0.95);
-            draw_text(frame, 102, y + 22, "EMPTY", [0x94, 0xA3, 0xB8, 0xFF]);
-        }
-    }
+        });
 
-    draw_text(frame, 16, 228, "UP/DOWN SELECT  Z SAVE  X LOAD  ESC CLOSE", [0xD1, 0xD5, 0xDB, 0xFF]);
-    if !menu.status_message.is_empty() {
-        draw_text(frame, 16, 216, &menu.status_message, [0xFD, 0xBA, 0x74, 0xFF]);
+    egui::Window::new("Save / Rewind")
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .collapsible(false)
+        .resizable(false)
+        .title_bar(true)
+        .fixed_size(window_size)
+        .frame(
+            egui::Frame::window(&ctx.style())
+                .fill(egui::Color32::from_rgb(36, 42, 58))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(92, 108, 140)))
+                .inner_margin(egui::Margin::same(12.0)),
+        )
+        .show(ctx, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(10.0, 8.0);
+            ui.label(
+                RichText::new("State slots are persisted per ROM. Game emulation is paused while this menu is open.")
+                    .size(15.0)
+                    .color(egui::Color32::from_rgb(220, 228, 242)),
+            );
+            ui.add_space(4.0);
+
+            egui::Grid::new("save_slot_grid")
+                .num_columns(SAVE_SLOT_COLUMNS)
+                .spacing(egui::vec2(10.0, 10.0))
+                .show(ui, |ui| {
+                    for (index, slot) in menu.slots.iter_mut().enumerate() {
+                        let selected = index == menu.selected_slot;
+                        let selected_t = ctx.animate_bool(
+                            egui::Id::new(("save_slot_selected", index)),
+                            selected,
+                        );
+                        let fill = lerp_color(
+                            egui::Color32::from_rgb(43, 50, 68),
+                            egui::Color32::from_rgb(88, 126, 214),
+                            selected_t,
+                        );
+                        let stroke = egui::Stroke::new(
+                            egui::lerp(1.0..=2.5, selected_t),
+                            lerp_color(
+                                egui::Color32::from_rgb(76, 88, 118),
+                                egui::Color32::from_rgb(245, 212, 110),
+                                selected_t,
+                            ),
+                        );
+                        egui::Frame::group(ui.style())
+                            .fill(fill)
+                            .stroke(stroke)
+                            .inner_margin(egui::Margin::same(8.0))
+                            .show(ui, |ui| {
+                                ui.set_min_width(thumbnail_size.x + 16.0);
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("SLOT {}", index + 1))
+                                            .strong()
+                                            .size(18.0)
+                                            .color(egui::Color32::from_rgb(240, 244, 255)),
+                                    );
+                                    ui.add_space(2.0);
+
+                                    if let Some(slot) = slot {
+                                        if slot.texture.is_none() {
+                                            let image = ColorImage::from_rgba_unmultiplied(
+                                                [THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT],
+                                                &slot.thumbnail_rgba,
+                                            );
+                                            slot.texture = Some(ctx.load_texture(
+                                                format!("save_slot_thumb_{}", index),
+                                                image,
+                                                egui::TextureOptions::LINEAR,
+                                            ));
+                                        }
+                                        if let Some(texture) = &slot.texture {
+                                            ui.image(texture, thumbnail_size);
+                                        }
+                                        ui.add_space(2.0);
+                                        ui.label(
+                                            RichText::new(format_saved_at(slot.saved_at_unix))
+                                                .size(14.0)
+                                                .color(egui::Color32::from_rgb(224, 230, 244)),
+                                        );
+                                    } else {
+                                        let (rect, _) = ui.allocate_exact_size(
+                                            thumbnail_size,
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            8.0,
+                                            egui::Color32::from_rgb(20, 25, 34),
+                                        );
+                                        ui.painter().text(
+                                            rect.center(),
+                                            egui::Align2::CENTER_CENTER,
+                                            "EMPTY",
+                                            egui::FontId::proportional(18.0),
+                                            egui::Color32::from_rgb(190, 200, 220),
+                                        );
+                                        ui.add_space(2.0);
+                                        ui.label(
+                                            RichText::new("No save data")
+                                                .size(14.0)
+                                                .color(egui::Color32::from_rgb(214, 222, 238)),
+                                        );
+                                    }
+                                });
+                            });
+
+                        if index % SAVE_SLOT_COLUMNS == SAVE_SLOT_COLUMNS - 1 {
+                            ui.end_row();
+                        }
+                    }
+                });
+
+            ui.separator();
+            ui.label(
+                RichText::new("Up/Down/Left/Right: Select slot   Z: Save   X: Load   Esc: Close")
+                    .size(16.0)
+                    .color(egui::Color32::from_rgb(232, 238, 250)),
+            );
+            let status_text = if menu.status_message.is_empty() {
+                " ".to_string()
+            } else {
+                menu.status_message.clone()
+            };
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 210, 92),
+                RichText::new(status_text).size(18.0).strong(),
+            );
+        });
+
+    if menu.confirm_overwrite {
+        egui::Area::new("overwrite_modal")
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::window(ui.style())
+                    .fill(egui::Color32::from_rgb(54, 61, 82))
+                    .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(245, 212, 110)))
+                    .rounding(egui::Rounding::same(10.0))
+                    .inner_margin(egui::Margin::symmetric(20.0, 16.0))
+                    .show(ui, |ui| {
+                        ui.set_min_width(360.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                RichText::new("Overwrite save data?")
+                                    .size(24.0)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(248, 250, 255)),
+                            );
+                            ui.add_space(8.0);
+                            ui.label(
+                                RichText::new("This slot already contains a saved state.")
+                                    .size(16.0)
+                                    .color(egui::Color32::from_rgb(230, 236, 248)),
+                            );
+                            ui.add_space(14.0);
+                            ui.horizontal(|ui| {
+                                let no_selected = !menu.confirm_yes_selected;
+                                let yes_selected = menu.confirm_yes_selected;
+                                for (label, selected) in [("NO", no_selected), ("YES", yes_selected)] {
+                                    let fill = if selected {
+                                        egui::Color32::from_rgb(255, 210, 92)
+                                    } else {
+                                        egui::Color32::from_rgb(78, 88, 116)
+                                    };
+                                    let text = if selected {
+                                        RichText::new(label)
+                                            .size(18.0)
+                                            .strong()
+                                            .color(egui::Color32::BLACK)
+                                    } else {
+                                        RichText::new(label)
+                                            .size(18.0)
+                                            .strong()
+                                            .color(egui::Color32::from_rgb(238, 242, 250))
+                                    };
+                                    ui.add(
+                                        egui::Button::new(text)
+                                            .fill(fill)
+                                            .min_size(egui::vec2(112.0, 42.0)),
+                                    );
+                                }
+                            });
+                            ui.add_space(10.0);
+                            ui.label(
+                                RichText::new("LEFT/RIGHT: Choose   Z: Confirm   X: Cancel")
+                                    .size(15.0)
+                                    .color(egui::Color32::from_rgb(225, 232, 246)),
+                            );
+                        });
+                    });
+            });
     }
 }
 
@@ -317,6 +511,11 @@ struct GamepadInput {
     profile: GamepadProfile,
     pressed_codes: HashSet<u32>,
     axis_values: HashMap<u32, f32>,
+    menu_combo_pressed: bool,
+    left_trigger_active: bool,
+    right_trigger_active: bool,
+    left_trigger_activated_at: Option<Instant>,
+    right_trigger_activated_at: Option<Instant>,
 }
 
 impl GamepadInput {
@@ -337,6 +536,11 @@ impl GamepadInput {
             profile,
             pressed_codes: HashSet::new(),
             axis_values: HashMap::new(),
+            menu_combo_pressed: false,
+            left_trigger_active: false,
+            right_trigger_active: false,
+            left_trigger_activated_at: None,
+            right_trigger_activated_at: None,
         })
     }
 
@@ -352,6 +556,11 @@ impl GamepadInput {
         self.active_gamepad = active_gamepad;
         self.pressed_codes.clear();
         self.axis_values.clear();
+        self.menu_combo_pressed = false;
+        self.left_trigger_active = false;
+        self.right_trigger_active = false;
+        self.left_trigger_activated_at = None;
+        self.right_trigger_activated_at = None;
         self.profile = active_gamepad
             .map(|id| Self::detect_profile(self.gilrs.gamepad(id).name()))
             .unwrap_or(GamepadProfile::Default);
@@ -365,8 +574,40 @@ impl GamepadInput {
         self.axis_values.get(&code).copied().unwrap_or(0.0)
     }
 
-    fn update(&mut self) {
+    fn take_menu_combo_pressed(&mut self) -> bool {
+        let pressed = self.menu_combo_pressed;
+        self.menu_combo_pressed = false;
+        pressed
+    }
+
+    fn update_trigger_state(
+        active: &mut bool,
+        activated_at: &mut Option<Instant>,
+        other_active: bool,
+        other_activated_at: Option<Instant>,
+        next_active: bool,
+    ) -> bool {
+        if next_active && !*active {
+            let now = Instant::now();
+            *active = true;
+            *activated_at = Some(now);
+            return other_active
+                || other_activated_at
+                    .map(|t| now.duration_since(t) <= MENU_COMBO_GRACE_PERIOD)
+                    .unwrap_or(false);
+        }
+
+        if !next_active {
+            *active = false;
+        }
+
+        false
+    }
+
+    fn update(&mut self) -> bool {
+        let mut changed = false;
         while let Some(event) = self.gilrs.next_event() {
+            changed = true;
             match event.event {
                 EventType::Connected => {
                     if self.active_gamepad.is_none() {
@@ -399,11 +640,36 @@ impl GamepadInput {
                     self.pressed_codes.remove(&code.into_u32());
                 }
                 EventType::AxisChanged(_, value, code) => {
-                    self.axis_values.insert(code.into_u32(), value);
+                    let raw = code.into_u32();
+                    self.axis_values.insert(raw, value);
+                    if matches!(self.profile, GamepadProfile::XboxWirelessMac) {
+                        if raw == XBOX_MAC_AXIS_LT_CODE {
+                            if Self::update_trigger_state(
+                                &mut self.left_trigger_active,
+                                &mut self.left_trigger_activated_at,
+                                self.right_trigger_active,
+                                self.right_trigger_activated_at,
+                                value >= 0.5,
+                            ) {
+                                self.menu_combo_pressed = true;
+                            }
+                        } else if raw == XBOX_MAC_AXIS_RT_CODE {
+                            if Self::update_trigger_state(
+                                &mut self.right_trigger_active,
+                                &mut self.right_trigger_activated_at,
+                                self.left_trigger_active,
+                                self.left_trigger_activated_at,
+                                value >= 0.5,
+                            ) {
+                                self.menu_combo_pressed = true;
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
         }
+        changed
     }
 
     fn button_held(&self, button: JoypadButton) -> bool {
@@ -520,6 +786,12 @@ fn main() -> Result<()> {
         let surface_texture = SurfaceTexture::new(window_size.width, window_size.height, &window);
         Pixels::new(WIDTH, HEIGHT, surface_texture).map_err(Error::msg)?
     };
+    let egui_ctx = egui::Context::default();
+    let mut egui_state = EguiWinitState::new(&window);
+    egui_state.set_pixels_per_point(window.scale_factor() as f32);
+    egui_state.set_max_texture_side(pixels.context().device.limits().max_texture_dimension_2d as usize);
+    let mut egui_renderer =
+        EguiRenderer::new(&pixels.context().device, pixels.surface_texture_format(), None, 1);
 
     // Load ROM
     let args: Vec<String> = std::env::args().collect();
@@ -655,6 +927,10 @@ fn main() -> Result<()> {
     let mut prev_menu_combo_held = false;
     let mut prev_menu_up_held = false;
     let mut prev_menu_down_held = false;
+    let mut prev_menu_left_held = false;
+    let mut prev_menu_right_held = false;
+    let mut prev_menu_confirm_held = false;
+    let mut prev_menu_load_held = false;
 
     // WAV dump buffer: (raw, filtered) stereo pairs
     let mut wav_samples: Vec<(f32, f32)> = Vec::new();
@@ -678,15 +954,79 @@ fn main() -> Result<()> {
         event_loop.run(move |event, _, control_flow| {
             control_flow.set_poll();
 
+            if let Event::WindowEvent { event, .. } = &event {
+                let _ = egui_state.on_event(&egui_ctx, event);
+            }
+
+            if matches!(event, Event::MainEventsCleared) && save_menu.visible {
+                window.request_redraw();
+            }
+
             // Handle redraw requests
             if let Event::RedrawRequested(_) = event {
+                let full_output = if save_menu.visible {
+                    let raw_input = egui_state.take_egui_input(&window);
+                    let output = egui_ctx.run(raw_input, |ctx| {
+                        show_save_menu_egui(ctx, &mut save_menu);
+                    });
+                    egui_state.handle_platform_output(&window, &egui_ctx, output.platform_output.clone());
+                    Some(output)
+                } else {
+                    None
+                };
+
                 let frame = pixels.frame_mut();
                 nes.draw(frame);
-                if save_menu.visible {
-                    draw_save_menu(frame, &save_menu);
-                }
 
-                if let Err(err) = pixels.render() {
+                let render_result = pixels.render_with(|encoder, render_target, context| {
+                    context.scaling_renderer.render(encoder, render_target);
+
+                    if let Some(full_output) = &full_output {
+                        for (id, image_delta) in &full_output.textures_delta.set {
+                            egui_renderer.update_texture(&context.device, &context.queue, *id, image_delta);
+                        }
+
+                        let clipped_primitives =
+                            egui_ctx.tessellate(full_output.shapes.clone());
+                        let screen_descriptor = ScreenDescriptor {
+                            size_in_pixels: [window.inner_size().width, window.inner_size().height],
+                            pixels_per_point: egui_state.pixels_per_point(),
+                        };
+
+                        let _user_cmd_bufs = egui_renderer.update_buffers(
+                            &context.device,
+                            &context.queue,
+                            encoder,
+                            &clipped_primitives,
+                            &screen_descriptor,
+                        );
+
+                        {
+                            let mut render_pass =
+                                encoder.begin_render_pass(&pixels::wgpu::RenderPassDescriptor {
+                                    label: Some("egui_overlay_render_pass"),
+                                    color_attachments: &[Some(pixels::wgpu::RenderPassColorAttachment {
+                                        view: render_target,
+                                        resolve_target: None,
+                                        ops: pixels::wgpu::Operations {
+                                            load: pixels::wgpu::LoadOp::Load,
+                                            store: true,
+                                        },
+                                    })],
+                                    depth_stencil_attachment: None,
+                                });
+                            egui_renderer.render(&mut render_pass, &clipped_primitives, &screen_descriptor);
+                        }
+
+                        for id in &full_output.textures_delta.free {
+                            egui_renderer.free_texture(id);
+                        }
+                    }
+
+                    Ok(())
+                });
+
+                if let Err(err) = render_result {
                     error!("pixels.render() failed: {}", err);
                     write_save_if_needed(&nes, &save_path);
                     control_flow.set_exit();
@@ -694,28 +1034,63 @@ fn main() -> Result<()> {
                 }
             }
 
-            // Handle input events
-            if input.update(&event) {
-                if let Some(gamepad_input) = gamepad_input.as_mut() {
-                    gamepad_input.update();
-                }
+            let input_updated = input.update(&event);
+            let gamepad_changed = gamepad_input
+                .as_mut()
+                .map(|gamepad_input| gamepad_input.update())
+                .unwrap_or(false);
 
-                let menu_combo_held = gamepad_input
+            let menu_combo_held = gamepad_input
+                .as_ref()
+                .map(|gamepad_input| gamepad_input.menu_combo_held())
+                .unwrap_or(false);
+            let gamepad_menu_combo_pressed = gamepad_input
+                .as_mut()
+                .map(|gamepad_input| gamepad_input.take_menu_combo_pressed())
+                .unwrap_or(false);
+            let gamepad_held = |button| {
+                gamepad_input
                     .as_ref()
-                    .map(|gamepad_input| gamepad_input.menu_combo_held())
-                    .unwrap_or(false);
-                if (input.key_pressed(VirtualKeyCode::Tab) || (menu_combo_held && !prev_menu_combo_held))
-                    && !input.key_pressed(VirtualKeyCode::Escape)
-                {
-                    if save_menu.visible {
-                        save_menu.close();
-                    } else {
-                        save_menu.open();
-                    }
-                    window.request_redraw();
-                }
-                prev_menu_combo_held = menu_combo_held;
+                    .map(|gamepad_input| gamepad_input.button_held(button))
+                    .unwrap_or(false)
+            };
 
+            let menu_up_held =
+                input.key_held(VirtualKeyCode::Up) || gamepad_held(JoypadButton::UP);
+            let menu_down_held =
+                input.key_held(VirtualKeyCode::Down) || gamepad_held(JoypadButton::DOWN);
+            let menu_left_held =
+                input.key_held(VirtualKeyCode::Left) || gamepad_held(JoypadButton::LEFT);
+            let menu_right_held =
+                input.key_held(VirtualKeyCode::Right) || gamepad_held(JoypadButton::RIGHT);
+            let menu_confirm_held =
+                input.key_held(VirtualKeyCode::Z) || gamepad_held(JoypadButton::BUTTON_A);
+            let menu_load_held =
+                input.key_held(VirtualKeyCode::X) || gamepad_held(JoypadButton::BUTTON_B);
+
+            if (input_updated || gamepad_changed)
+                && (input.key_pressed(VirtualKeyCode::Tab)
+                    || gamepad_menu_combo_pressed
+                    || (menu_combo_held && !prev_menu_combo_held))
+                && !input.key_pressed(VirtualKeyCode::Escape)
+            {
+                if save_menu.visible {
+                    save_menu.close();
+                } else {
+                    save_menu.open();
+                    prev_menu_up_held = menu_up_held;
+                    prev_menu_down_held = menu_down_held;
+                    prev_menu_left_held = menu_left_held;
+                    prev_menu_right_held = menu_right_held;
+                    prev_menu_confirm_held = menu_confirm_held;
+                    prev_menu_load_held = menu_load_held;
+                }
+                window.request_redraw();
+            }
+            prev_menu_combo_held = menu_combo_held;
+
+            // Handle input events
+            if input_updated || gamepad_changed {
                 if input.key_pressed(VirtualKeyCode::Escape) || input.close_requested() {
                     if save_menu.visible {
                         save_menu.close();
@@ -732,52 +1107,95 @@ fn main() -> Result<()> {
                     return;
                 }
 
-                let gamepad_held = |button| {
-                    gamepad_input
-                        .as_ref()
-                        .map(|gamepad_input| gamepad_input.button_held(button))
-                        .unwrap_or(false)
-                };
-
                 if save_menu.visible {
-                    let menu_up_held =
-                        input.key_held(VirtualKeyCode::Up) || gamepad_held(JoypadButton::UP);
-                    let menu_down_held =
-                        input.key_held(VirtualKeyCode::Down) || gamepad_held(JoypadButton::DOWN);
-
-                    if menu_up_held && !prev_menu_up_held {
-                        save_menu.move_selection(-1);
+                    if save_menu.close_after_load_release && !menu_load_held {
+                        save_menu.close();
+                        window.request_redraw();
+                    } else if !save_menu.close_after_load_release
+                        && !save_menu.confirm_overwrite
+                        && menu_up_held
+                        && !prev_menu_up_held
+                    {
+                        save_menu.move_selection(-1, 0);
+                        window.request_redraw();
+                    } else if !save_menu.close_after_load_release
+                        && !save_menu.confirm_overwrite
+                        && menu_down_held
+                        && !prev_menu_down_held
+                    {
+                        save_menu.move_selection(1, 0);
+                        window.request_redraw();
+                    } else if !save_menu.close_after_load_release
+                        && !save_menu.confirm_overwrite
+                        && menu_left_held
+                        && !prev_menu_left_held
+                    {
+                        save_menu.move_selection(0, -1);
+                        window.request_redraw();
+                    } else if !save_menu.close_after_load_release
+                        && !save_menu.confirm_overwrite
+                        && menu_right_held
+                        && !prev_menu_right_held
+                    {
+                        save_menu.move_selection(0, 1);
                         window.request_redraw();
                     }
-                    if menu_down_held && !prev_menu_down_held {
-                        save_menu.move_selection(1);
-                        window.request_redraw();
+                    if save_menu.confirm_overwrite && !save_menu.close_after_load_release {
+                        if menu_left_held && !prev_menu_left_held {
+                            save_menu.confirm_yes_selected = false;
+                            window.request_redraw();
+                        }
+                        if menu_right_held && !prev_menu_right_held {
+                            save_menu.confirm_yes_selected = true;
+                            window.request_redraw();
+                        }
                     }
                     prev_menu_up_held = menu_up_held;
                     prev_menu_down_held = menu_down_held;
+                    prev_menu_left_held = menu_left_held;
+                    prev_menu_right_held = menu_right_held;
+                    let menu_confirm_pressed =
+                        input.key_pressed(VirtualKeyCode::Z)
+                            || (menu_confirm_held && !prev_menu_confirm_held);
+                    let menu_load_pressed =
+                        input.key_pressed(VirtualKeyCode::X)
+                            || (menu_load_held && !prev_menu_load_held);
+                    prev_menu_confirm_held = menu_confirm_held;
+                    prev_menu_load_held = menu_load_held;
 
-                    if input.key_pressed(VirtualKeyCode::Z) || gamepad_held(JoypadButton::BUTTON_A) {
+                    if !save_menu.close_after_load_release && menu_confirm_pressed {
                         if let Err(err) = save_menu.save_selected(&nes) {
                             save_menu.status_message = format!("SAVE FAILED: {}", err);
                         }
                         window.request_redraw();
                     }
-                    if input.key_pressed(VirtualKeyCode::X) || gamepad_held(JoypadButton::BUTTON_B) {
-                        match save_menu.load_selected() {
-                            Ok(Some(snapshot)) => {
-                                nes.load_state(&snapshot);
-                                save_state_slot = Some(snapshot);
-                                audio_buffer.lock().unwrap().clear();
-                                last_frame_time = Instant::now();
+                    if !save_menu.close_after_load_release && menu_load_pressed {
+                        if save_menu.confirm_overwrite {
+                            save_menu.confirm_overwrite = false;
+                            save_menu.confirm_yes_selected = false;
+                            save_menu.status_message = "SAVE CANCELED".to_string();
+                        } else {
+                            match save_menu.load_selected() {
+                                Ok(Some(snapshot)) => {
+                                    nes.load_state(&snapshot);
+                                    save_state_slot = Some(snapshot);
+                                    audio_buffer.lock().unwrap().clear();
+                                    last_frame_time = Instant::now();
+                                    save_menu.close_after_load_release = true;
+                                }
+                                Ok(None) => {}
+                                Err(err) => save_menu.status_message = format!("LOAD FAILED: {}", err),
                             }
-                            Ok(None) => {}
-                            Err(err) => save_menu.status_message = format!("LOAD FAILED: {}", err),
                         }
                         window.request_redraw();
                     }
                 } else {
                     prev_menu_up_held = false;
                     prev_menu_down_held = false;
+                    prev_menu_left_held = false;
+                    prev_menu_right_held = false;
+                    prev_menu_confirm_held = menu_confirm_held;
+                    prev_menu_load_held = menu_load_held;
 
                     if input.key_pressed(VirtualKeyCode::F5) {
                         save_state_slot = Some(nes.save_state());
