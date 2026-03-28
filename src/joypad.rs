@@ -1,7 +1,8 @@
 use bitflags::bitflags;
+use serde::{Deserialize, Serialize};
 
 bitflags! {
-    #[derive(Clone, Copy, PartialEq, Eq)]
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct JoypadButton: u8 {
         const RIGHT             = 0b10000000;
         const LEFT              = 0b01000000;
@@ -14,6 +15,7 @@ bitflags! {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Joypad {
     strobe: bool,
     button_index: u8,

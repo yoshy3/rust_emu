@@ -1,7 +1,12 @@
 use crate::cartridge::Mirroring;
+use serde::{Deserialize, Serialize};
+use serde_big_array::BigArray;
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Ppu {
+    #[serde(with = "BigArray")]
     pub vram: [u8; 2048],
+    #[serde(with = "BigArray")]
     pub oam: [u8; 256],
     pub palette: [u8; 32],
 
@@ -26,6 +31,7 @@ pub struct Ppu {
 
     pub mirroring: Mirroring,
     pub chr_rom: Vec<u8>,
+    #[serde(with = "BigArray")]
     pub chr_ram: [u8; 8192],
     pub mapper: u8,
     pub chr_bank: usize,

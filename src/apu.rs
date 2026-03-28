@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 const LENGTH_TABLE: [u8; 32] = [
     10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14, 12, 16, 24, 18, 48, 20, 96, 22,
     192, 24, 72, 26, 16, 28, 32, 30,
@@ -14,6 +16,7 @@ const DMC_PERIOD_TABLE: [u16; 16] = [
 
 const PULSE_EDGE_SMOOTH_CYCLES: u8 = 10;
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Apu {
     // Pulse 1
     pulse1_enabled: bool,
@@ -1091,4 +1094,3 @@ dmc[en={} len={} lvl={} buf={} bits={} silent={} per={} tmr={}]",
         }
     }
 }
-
