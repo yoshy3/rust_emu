@@ -16,7 +16,7 @@ Rustで書かれた、デスクトップ（Windows/Mac/Linux）およびWebAssem
 - **クロスプラットフォーム**: デスクトップおよびモダンなウェブブラウザで動作します。
 - **レンダリング**: `pixels` ライブラリを使用したハードウェアアクセラレーションによる2D描画。
 - **Web対応**: `wasm-bindgen` を使用したビルド。
-- **Mapper対応**: Mapper 0 (NROM), Mapper 1 (MMC1), Mapper 2 (UxROM), Mapper 3 (CNROM), Mapper 4 (MMC3), Mapper 21/23/25 (VRC4)。
+- **Mapper対応**: Mapper 0 (NROM), Mapper 1 (MMC1), Mapper 2 (UxROM), Mapper 3 (CNROM), Mapper 4 (MMC3), Mapper 21/23/25 (VRC4), Mapper 73 (VRC3)。
 - **バッテリセーブ（デスクトップ）**: バッテリバックアップ対応ROMでは、PRG RAMをROMと同じ場所の `.sav` ファイルに保存/復元します。
 
 ## 必要条件
@@ -114,8 +114,8 @@ GitHub リポジトリの Settings で、**Pages** の公開元を **GitHub Acti
 ### リリース手順
 
 ```bash
-git tag v0.2.1
-git push origin v0.2.1
+git tag v0.6.1
+git push origin v0.6.1
 ```
 
 ## game_examples のリリース
